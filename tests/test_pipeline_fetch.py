@@ -7,7 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from co_docs_watcher.errors import DocumentError, SourceContractError, TransientSourceError
+from co_docs_watcher.errors import (
+    CaptchaRequiredError,
+    DocumentError,
+    SourceContractError,
+    TransientSourceError,
+)
 from co_docs_watcher.manifest.repo import FileRecord, Manifest
 from co_docs_watcher.models import FileRole, LocalState, SourceDocument
 from co_docs_watcher.pipeline.fetch import (
@@ -313,3 +318,20 @@ def test_a_container_left_by_an_interrupted_run_is_replaced_not_duplicated(
         "ITR_160310_V01.pdf",
     ]
     assert (debris / "ITR_160310_V01.pdf").read_bytes() == PDF_BYTES
+
+
+def test_a_source_that_refuses_the_run_costs_the_queue_nothing(
+    manifest: Manifest, roots: Roots
+) -> None:
+    # A captcha ends the run; the document in flight was never attempted, and the next run
+    # must find it in the queue with its retry budget intact.
+    document = make_document()
+    queue(manifest, document)
+    source = FakeSource(failures={document.identity: [CaptchaRequiredError("SolicitarCaptcha")]})
+
+    with pytest.raises(CaptchaRequiredError):
+        run(manifest, roots, source)
+
+    assert manifest.documents.require(document.identity).local_state is LocalState.DISCOVERED
+    assert manifest.attempts.attempts(document.identity) == 0
+    assert list(roots.staging_root.iterdir()) == []

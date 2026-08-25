@@ -30,7 +30,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from co_docs_watcher.clock import directory_name
-from co_docs_watcher.errors import DocumentError, SourceContractError, TransientSourceError
+from co_docs_watcher.errors import (
+    CaptchaRequiredError,
+    DocumentError,
+    RequestBudgetExceededError,
+    SourceContractError,
+    TransientSourceError,
+)
 from co_docs_watcher.manifest.repo import AttemptOutcome, FileRecord, Identity, Manifest
 from co_docs_watcher.models import (
     DeliveredFile,
@@ -126,6 +132,12 @@ def fetch_pending(
             )
             manifest.attempts.record(identity, AttemptOutcome.SUCCESS)
             available.append(identity)
+        except (CaptchaRequiredError, RequestBudgetExceededError):
+            # The source refused the run, not this document. Put it back in the queue before
+            # the run ends: charging its retry budget for an attempt that never reached it is
+            # how a document that was only ever unlucky ends up permanently failed.
+            manifest.documents.transition(identity, LocalState.DISCOVERED)
+            raise
         except SourceContractError as error:
             # Not retryable and not the document's fault: a signature this build cannot store
             # will not become storable on the next attempt. Loud, and the batch continues.
