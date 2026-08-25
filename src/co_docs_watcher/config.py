@@ -41,6 +41,7 @@ __all__ = [
     "DEFAULT_MIN_REQUEST_INTERVAL",
     "DEFAULT_REGISTRY_MAX_AGE_DAYS",
     "DEFAULT_RETENTION_DAYS",
+    "DEFAULT_SOURCE_BASE_URL",
     "DEFAULT_TIMEZONE",
     "Config",
     "discover_config_path",
@@ -53,6 +54,10 @@ CONFIG_ENV_VAR = "CO_WATCHER_CONFIG"
 
 #: Timezone of the source. Delivery dates, "today", and directory names are all read in it.
 DEFAULT_TIMEZONE = "America/Sao_Paulo"
+
+#: Where the RAD front end lives. Overridden to point a test server or a mirror; the adapter
+#: keeps its own copy of this default, because nothing outside ``rad/`` may import from it.
+DEFAULT_SOURCE_BASE_URL = "https://www.rad.cvm.gov.br/ENETWeb/"
 
 #: Retained dates, counting today. ``first_retained_date = today - (N - 1)``.
 DEFAULT_RETENTION_DAYS = 7
@@ -82,7 +87,7 @@ _SCHEMA: dict[str, set[str]] = {
     "paths": {"data_root", "documents_root"},
     "retention": {"days"},
     "registry": {"max_age_days"},
-    "source": {"timezone", "min_request_interval", "max_requests_per_run"},
+    "source": {"timezone", "min_request_interval", "max_requests_per_run", "base_url"},
 }
 
 
@@ -106,6 +111,7 @@ class Config:
     min_request_interval: float
     max_requests_per_run: int
     registry_max_age_days: int
+    source_base_url: str
     prefix_overrides: Mapping[str, str]
     origin: Path | None
 
@@ -128,6 +134,10 @@ class Config:
     @property
     def registry_cache_root(self) -> Path:
         return self.data_root / "cvm-cache"
+
+    @property
+    def watch_list_path(self) -> Path:
+        return self.data_root / "companies.yaml"
 
     @property
     def staging_root(self) -> Path:
@@ -199,6 +209,7 @@ def load_config(
             min_request_interval=DEFAULT_MIN_REQUEST_INTERVAL,
             max_requests_per_run=DEFAULT_MAX_REQUESTS_PER_RUN,
             registry_max_age_days=DEFAULT_REGISTRY_MAX_AGE_DAYS,
+            source_base_url=DEFAULT_SOURCE_BASE_URL,
             prefix_overrides={},
             origin=None,
         )
@@ -256,6 +267,12 @@ def _from_file(path: Path) -> Config:
             "max_age_days",
             DEFAULT_REGISTRY_MAX_AGE_DAYS,
             where="registry",
+            path=path,
+        ),
+        source_base_url=_http_url(
+            _string(source, "base_url", DEFAULT_SOURCE_BASE_URL, where="source", path=path),
+            key="base_url",
+            where="source",
             path=path,
         ),
         prefix_overrides=_prefix_overrides(
@@ -323,6 +340,14 @@ def _absolute_path(section: Mapping[str, Any], key: str, *, where: str, path: Pa
             "exist only in the built-in defaults, and only with a warning"
         )
     return resolved
+
+
+def _http_url(value: str, *, key: str, where: str, path: Path | None) -> str:
+    """An http(s) URL. Anything else is a typo that would only surface as a network error."""
+    if not value.startswith(("http://", "https://")):
+        origin = f"{path}: " if path is not None else ""
+        raise ConfigError(f"{origin}[{where}] {key} must be an http:// or https:// URL")
+    return value
 
 
 def _string(section: Mapping[str, Any], key: str, default: str, *, where: str, path: Path) -> str:

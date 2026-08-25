@@ -142,8 +142,8 @@ class RadClient:
         max_listing_bytes: int = MAX_LISTING_BYTES,
         max_download_bytes: int = MAX_DOWNLOAD_BYTES,
         http: httpx.Client | None = None,
-        sleep: Callable[[float], None] = time.sleep,
-        monotonic: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] | None = None,
+        monotonic: Callable[[], float] | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/") + "/"
         self._min_interval = min_request_interval
@@ -155,8 +155,10 @@ class RadClient:
         self._max_download_bytes = max_download_bytes
         self._owns_http = http is None
         self._http = http if http is not None else httpx.Client(timeout=_TIMEOUT)
-        self._sleep = sleep
-        self._monotonic = monotonic
+        # Resolved at construction, not at definition: tests that stub ``time.sleep`` reach
+        # a client built afterwards, even one built deep inside the composition root.
+        self._sleep = time.sleep if sleep is None else sleep
+        self._monotonic = time.monotonic if monotonic is None else monotonic
         self._requests_made = 0
         self._last_request_at: float | None = None
 
