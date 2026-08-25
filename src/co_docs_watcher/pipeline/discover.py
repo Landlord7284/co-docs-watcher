@@ -19,8 +19,10 @@ supersession that happened before this archive existed, and creating a row for i
 document in the manifest that is never going to be fetched.
 
 *It does not touch the disk.* Flagging a document deactivated or cancelled is a state change;
-removing the files it left behind belongs to ``pipeline/reconcile``, which enacts the flag —
-in this run, or in the next one if this run does not survive.
+removing the files it left behind belongs to ``pipeline/reconcile``, whose ``enact_flags`` the
+caller runs immediately after the sweep — so a cancellation observed today takes the file with
+it today. If the run dies in between, nothing is lost: the flag is the document's state, not
+something held in memory, and the next run's startup reconciliation enacts it.
 """
 
 from __future__ import annotations

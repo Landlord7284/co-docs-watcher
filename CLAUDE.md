@@ -122,7 +122,7 @@ src/co_docs_watcher/
 1. **lock** — `flock` on `data_root`.
 2. **reconcile** — intermediate states left by an interrupted run.
 3. **registry** — refresh the FCA if stale. Failure here blocks new registrations, never monitoring.
-4. **discover** — one sweep per day of the window, filtered locally against the watched CVM codes; `Ativo` goes to the queue, `Inativo`/`Cancelado` reconcile what is already on disk.
+4. **discover** — one sweep per day of the window, filtered locally against the watched CVM codes; `Ativo` goes to the queue, `Inativo`/`Cancelado` reconcile what is already on disk: the sweep flags the state and the enactment — the same one step 2 performs — runs immediately after it, so a cancellation observed today takes the file with it today.
 5. **fetch** — download to `.tmp/`, validate, extract if ZIP, atomic `rename`.
 6. **purge** — whatever aged out of the window.
 7. **inbox** — regenerate the index of *every* day in the window, not just today's.

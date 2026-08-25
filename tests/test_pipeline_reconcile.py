@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import timedelta
 from pathlib import Path
 
+from co_docs_watcher.clock import RetentionWindow
 from co_docs_watcher.manifest.repo import FileRecord, Manifest
 from co_docs_watcher.models import FileRole, LocalState, SourceDocument, SourceStatus
+from co_docs_watcher.pipeline.discover import discover
 from co_docs_watcher.pipeline.fetch import MAX_ATTEMPTS, fetch_pending
-from co_docs_watcher.pipeline.reconcile import reconcile
+from co_docs_watcher.pipeline.reconcile import enact_flags, reconcile
 from tests.conftest import TODAY, Roots
 from tests.pipeline import PDF_BYTES, FakeSource
 from tests.test_models import make_document
@@ -244,3 +247,30 @@ def test_a_finished_run_reconciles_to_itself(manifest: Manifest, roots: Roots) -
     assert outcome == type(outcome)((), (), (), (), 0, 0)
     assert manifest.documents.require(document.identity).local_state is LocalState.AVAILABLE
     assert (roots.documents_root / ARCHIVED).exists()
+
+
+def test_a_cancellation_observed_today_takes_the_file_with_it_today(
+    manifest: Manifest, roots: Roots, window: RetentionWindow
+) -> None:
+    # Delivered and fetched days ago, inside the window; the sweep of today's run finds the
+    # same row cancelled. The file must not outlive the run that learned about it.
+    delivered = window.last - timedelta(days=4)
+    document = make_document(delivery_date=delivered)
+    manifest.documents.upsert_observed(document)
+    fetch_pending(
+        FakeSource(),
+        manifest,
+        documents_root=roots.documents_root,
+        staging_root=roots.staging_root,
+        watched=(PETR,),
+    )
+    placed = roots.documents_root / str(manifest.documents.require(document.identity).archive_path)
+    assert placed.exists()
+
+    cancelled = make_document(delivery_date=delivered, status=SourceStatus.CANCELLED)
+    discover(FakeSource([cancelled]), manifest, window=window, watched=(PETR,))
+    flags = enact_flags(manifest, documents_root=roots.documents_root)
+
+    assert flags.identities == (document.identity,)
+    assert not placed.exists()
+    assert manifest.documents.require(document.identity).local_state is LocalState.CANCELLED

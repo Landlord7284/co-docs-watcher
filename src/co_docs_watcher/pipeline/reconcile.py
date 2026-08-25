@@ -6,9 +6,11 @@ is where it is compared against what actually did — for a download killed in f
 document the source has since superseded or cancelled.
 
 It runs at the *start* of a run, before anything is discovered or fetched, so that a run
-inherits a consistent archive rather than adding to a broken one. A flag raised by discovery
-after this point is enacted by the next run: the flag is the document's state, not something
-held in memory, so nothing is lost by dying between the two.
+inherits a consistent archive rather than adding to a broken one — and :func:`enact_flags` runs
+again right after the sweep, so that a cancellation observed today takes the file with it today
+rather than leaving one run in which the index says cancelled and the file is still there.
+Nothing is lost if that second call never happens: the flag is the document's state and not
+something held in memory, so the next run enacts it.
 
 Everything here is idempotent. Running it twice changes nothing the second time, which is the
 only property that makes it safe to run before every single run.
@@ -31,13 +33,21 @@ from co_docs_watcher.manifest.repo import (
 from co_docs_watcher.models import LocalState
 from co_docs_watcher.pipeline.fetch import MAX_ATTEMPTS, archive_path_of, sha256_of
 
-__all__ = ["ReconcileOutcome", "reconcile"]
+__all__ = ["EnactedFlags", "ReconcileOutcome", "enact_flags", "reconcile"]
 
 logger = logging.getLogger(__name__)
 
 #: States that mean "the file is gone but the row explains why". The row is kept, and it is
 #: what the inbox reads to mention a cancellation on the day it was observed.
 _FLAGGED = (LocalState.DEACTIVATED, LocalState.CANCELLED)
+
+
+@dataclass(frozen=True, slots=True)
+class EnactedFlags:
+    """The documents whose files were removed because the source withdrew them."""
+
+    identities: tuple[Identity, ...]
+    removed_files: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,12 +86,9 @@ def reconcile(
             LocalState.FAILED: failed,
         }[outcome].append(record.identity)
 
-    enacted: list[Identity] = []
-    for record in manifest.documents.in_state(*_FLAGGED):
-        removed = _enact_flag(manifest, record, documents_root=documents_root)
-        if removed:
-            enacted.append(record.identity)
-            removed_files += removed
+    flags = enact_flags(manifest, documents_root=documents_root)
+    enacted = list(flags.identities)
+    removed_files += flags.removed_files
 
     discarded = _discard_staging(staging_root)
 
@@ -103,6 +110,23 @@ def reconcile(
         removed_files=removed_files,
         discarded_staging=discarded,
     )
+
+
+def enact_flags(manifest: Manifest, *, documents_root: Path) -> EnactedFlags:
+    """Remove what deactivated and cancelled documents left in the archive.
+
+    Called at the start of a run for flags inherited from the previous one, and again right
+    after the sweep for the flags it just raised. Idempotent both times: a document whose files
+    are already gone has no file rows left to act on.
+    """
+    identities: list[Identity] = []
+    removed_files = 0
+    for record in manifest.documents.in_state(*_FLAGGED):
+        removed = _enact_flag(manifest, record, documents_root=documents_root)
+        if removed:
+            identities.append(record.identity)
+            removed_files += removed
+    return EnactedFlags(tuple(identities), removed_files)
 
 
 def _resolve_in_flight(
