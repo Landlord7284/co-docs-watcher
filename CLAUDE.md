@@ -1,0 +1,230 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project
+
+`co-docs-watcher` monitors documents published on RAD/CVM (the Brazilian securities regulator's filing system) for a watch list of companies, downloads new deliveries, organizes them by delivery date, and maintains a local reading queue.
+
+The product is a **reading queue for people**. Success is measured by opening the day's folder and seeing what was published — not by historical completeness. The focus is material facts, notices, and general filings. DFP and ITR are archived because they arrive in the same flow and serve release-day checking.
+
+Out of scope: parsing document content, long-term preservation, and any heuristic correlation between versions — the source provides supersession ready-made.
+
+The repository currently contains the accepted architecture; the code described below is the Phase 0 design to be implemented.
+
+## Documentation
+
+| File | Role |
+|---|---|
+| `CLAUDE.md` | this file — scope, conventions, architecture, invariants |
+| `docs/fonte-rad.md` | full observed contract of the RAD/ENETWeb source, with measurement dates and payload examples |
+| `USAGE.md` | user-facing command reference, kept in step with the CLI |
+
+Where documentation and code diverge, the code wins and the document is corrected — silent divergence is forbidden. Violating an invariant requires explicit declaration and justification here. Every claim about the source carries the date it was measured: the CVM publishes no API contract, and an undated number ages silently. Re-verify; never trust indefinitely.
+
+## Language rule (strict)
+
+All code, configuration, file names, database schema, log output, comments, docstrings, commit messages, and technical documentation in this repository are in **English**. `docs/fonte-rad.md` and day-to-day conversation might be in **pt-BR**. This never crosses into the code.
+
+Conversation names concepts in Portuguese; the English vocabulary is **fixed** so that different sessions do not invent competing translations. Translate, never transliterate:
+
+The only exception is data that is not ours: RAD wire-format names (`temErro`, `SolicitarCaptcha`, `numSequencia`, `numVersao`, `numProtocolo`) are quoted literally when describing the wire, and take English names as model attributes — `numSequencia` → `document_id`, `numVersao` → `version`, `numProtocolo` → `protocol`. `CNPJ` keeps its regulatory name.
+
+## Commands
+
+```bash
+python -m venv .venv && .venv/bin/pip install -e ".[dev]"
+.venv/bin/pytest                  # unit + contract + integration
+.venv/bin/pytest -m live          # re-measures the real source (slow, needs network)
+.venv/bin/ruff check src tests
+```
+
+Run a single test with `pytest path/to/test_file.py::test_name`. The `live` marker is deselected by default.
+
+### CLI
+
+The canonical mode is **one-shot**. No daemon inside the package: a periodic mode, if it ever exists, is built on top of the one-shot, outside the package.
+
+```bash
+python -m co_docs_watcher doctor     # config, roots, timezone, source
+python -m co_docs_watcher add --ticker PETR
+python -m co_docs_watcher add --cvm-code 009512
+python -m co_docs_watcher run        # the canonical mode
+```
+
+Subcommands: `doctor`, `add`, `list [QUERY]`, `rm QUERY`, `resolve`, `run`, `reconcile`, `purge`, `status`.
+
+| Exit code | Meaning |
+|---:|---|
+| `0` | clean |
+| `1` | ran with isolated failures |
+| `2` | invalid configuration |
+| `3` | another instance holds the lock |
+| `4` | the source demanded a captcha — reduce frequency |
+
+Exit code `4` exists because `SolicitarCaptcha: "S"` is not a transient failure: retrying makes it worse.
+
+Flag names are English, always. `--config` is valid before or after the subcommand. Any flag whose destination differs from its option string needs an explicit `metavar`, or `argparse` leaks the internal name into the help text.
+
+Config discovery chain, in order: `--config` → `$CO_WATCHER_CONFIG` → `./config.toml` → `./co-docs-watcher.toml` → `~/.config/co-docs-watcher/config.toml` → built-in defaults. Falling back to the defaults **logs a deliberate warning**: they point at `./var/…`, and a silent fallback means operating on a different archive than intended. `data_root` and `documents_root` must be absolute in a real installation.
+
+## Architecture
+
+Python 3.12+. Dependency ceiling: `httpx`, `ruamel.yaml`, `tzdata`, and nothing else beyond the standard library. `ruamel.yaml` because comments must survive YAML rewrites; `tzdata` because a minimal Linux image ships no IANA database — which would be a crash before any error handling runs.
+
+```
+src/co_docs_watcher/
+├── cli.py            entry point, subcommands, exit codes
+├── clock.py          source timezone, window, directory names
+├── config.py         TOML discovery and loading
+├── errors.py         exception hierarchy
+├── lock.py           flock
+├── logging_setup.py  formatTime anchored on the source timezone
+├── run.py            orchestration of one run
+├── text.py
+├── cvm/              FCA registry: download, cache, search, ticker
+├── rad/              the source — nothing outside imports from here
+│   ├── client.py     POST, backoff, temErro translation
+│   ├── listing.py    window sweep -> list[SourceDocument]
+│   ├── schema.py     the 12 fields -> SourceDocument
+│   ├── download.py   GET, content sniffing, ZIP extraction
+│   └── vocabulary.py category table copied from cboDocumentos
+├── manifest/         db.py (connection, pragmas, migrations) + repo.py
+├── scope/            companies.yaml, models, resolver
+└── pipeline/         discover, fetch, reconcile, purge, inbox
+```
+
+**The seam has one rule, worth a CI-failing architecture test: no module outside `rad/` imports `rad/`.** The manifest stores `SourceDocument`, a neutral dataclass — never the source row.
+
+### One run
+
+1. **lock** — `flock` on `data_root`.
+2. **reconcile** — intermediate states left by an interrupted run.
+3. **registry** — refresh the FCA if stale. Failure here blocks new registrations, never monitoring.
+4. **discover** — one sweep per day of the window, filtered locally against the watched CVM codes; `Ativo` goes to the queue, `Inativo`/`Cancelado` reconcile what is already on disk.
+5. **fetch** — download to `.tmp/`, validate, extract if ZIP, atomic `rename`.
+6. **purge** — whatever aged out of the window.
+7. **inbox** — regenerate the index of *every* day in the window, not just today's.
+
+Step 7 is not zeal: a document downloaded on Monday can be deactivated on Wednesday, and Monday's index would keep pointing at a file that no longer exists. A past day is *rewritten*, never invented — the first run does not fabricate indexes for days the watcher was not there.
+
+### SQLite
+
+`PRAGMA journal_mode = WAL`, `synchronous = NORMAL`, `foreign_keys = ON`, `busy_timeout = 30000`. Migrations versioned by `PRAGMA user_version`. A schema newer than the build understands **refuses to open**, never degrades. No HTTP request happens inside an open transaction: pages are collected in memory first.
+
+## Archive layout
+
+Delivery date is the axis; within it, the company is the folder. A day without publications from a company creates no empty folder.
+
+```
+documents_root/
+├── _inbox/
+│   ├── 2026-08-24.md
+│   └── 2026-08-21.md
+├── 2026-08-24/
+│   ├── PETR/
+│   │   ├── Fato-Relevante_160310_V01.pdf
+│   │   └── ITR/
+│   │       ├── ITR_160282_V01.pdf
+│   │       ├── 009512ITR30-06-2026v1.xml
+│   │       └── ...
+│   └── VALE/
+│       └── Aviso-aos-Acionistas_160295_V01.pdf
+└── .tmp/
+```
+
+Three rules that look like detail and are not:
+
+- **The generated PDF inside a ZIP is renamed.** It arrives with the generation instant in its name — two downloads produce two names. The on-disk name is imposed by the watcher, in the same convention as the rest. Other ZIP members keep their origin names, which are stable.
+- **A category subfolder carries identity in the PDF name, not the directory.** Two deliveries of the same category on the same day must not collide; if they would, the subfolder gains a `_V{version}` suffix.
+- **`.tmp/` lives under `documents_root`**, so `rename` stays atomic within a single filesystem.
+
+The inbox index includes the subject (listing field 11). A cancelled document does not become a file, but is mentioned in the inbox of the day it was observed.
+
+## Company identity
+
+Folders are named by the ticker root from the FCA registry, with fallbacks. The root rule:
+
+```
+^([A-Z][A-Z0-9]{3,})(\d{1,2}[A-Z]?)$
+```
+
+Group 1 is the root: `PETR4 → PETR`, `POMO3/POMO4 → POMO`, `EQMA3B → EQMA`, `B3SA3 → B3SA`. When a company has more than one root (typically subscription-receipt pairs like `ENGI`/`ENGI1`), **the shorter root wins**; remaining ties break alphabetically and can be overridden in the config file. Measured on the 2026 FCA: zero root collisions between companies, and `CNPJ → CD_CVM` is strictly 1:1.
+
+`Codigo_Negociacao` is free text and must be distrusted: dozens of companies fill it with junk (`'NÃO HÁ'`, `'B3'`, bare numbers). The resolver **validates the root against the rule above** and falls back when it fails. Legitimate class-digit-less codes matching `^[A-Z]{4,5}$` (e.g. `LMED`, `TEGA`) already *are* the root and are accepted as such.
+
+Fallback chain: **1)** validated ticker root (`PETR`) → **2)** reduced, sanitized legal name (`PLASCAR-PARTICIPACOES`) → **3)** zero-padded CVM code (`009512`).
+
+The folder name is a **snapshot, not identity**: a folder once created is never renamed. Identity lives in the manifest and in `(id, version)` inside the file name. If a company lists on the exchange after monitoring began, older days stay under the old name — that is correct, not a bug.
+
+Registry search resolves **ticker → CNPJ → CD_CVM**, with fallback to a numeric CVM code and to a normalized substring of `Nome_Empresarial` **and** `Nome_Empresarial_Anterior` — the previous legal name matters more than it seems: half the companies have one.
+
+## Document identity and states
+
+Publication identity is `(num_sequencia, num_versao)`. It is not lineage identity: **every resubmission gets a new `num_sequencia`**, so "same id, higher version" never fires. The source marks exactly one `Ativo` per lineage and demotes the rest to `Inativo`; the listing preserves history, so supersession is a column, not a heuristic. Lineage, when grouping is needed, comes from `(cvm_code, category, reference_date)` — structurally confirmed by `num_protocolo`.
+
+`num_protocolo` is **persisted, not derived**: it is a required download argument, and without it a document discovered today cannot be downloaded tomorrow without re-listing.
+
+| State | Meaning |
+|---|---|
+| `discovered` | Seen in the listing as `Ativo`, not yet downloaded. |
+| `downloading` | In flight. Reconciled on the next start. |
+| `available` | On disk, validated. |
+| `skipped` | Seen, but outside current criteria. Re-evaluated every run. |
+| `failed` | Failed after retries. Does not block the batch. |
+| `deactivated` | Was `available`, went back to `Inativo`: file removed, row stays. |
+| `cancelled` | Went `Cancelado`: file removed, and the day's inbox mentions it. |
+| `purged` | Aged out of the window. Nothing more. |
+
+`deactivated` and `cancelled` exist separately from `purged` so that `purged` keeps meaning "aged out" and nothing else — otherwise the archive loses the ability to explain why a file disappeared.
+
+**Content hash**: structured-document ZIPs are generated on demand — two downloads of the same ITR differ, and entry-by-entry comparison shows only the generated PDF changes; standalone PDFs are stable. The hash is therefore recorded **per file, with a stability marker**, serving integrity and auditing — never deduplication, which is and remains `(num_sequencia, num_versao)`.
+
+## The source (condensed contract)
+
+Full contract, with measurement dates and payload examples, in `docs/fonte-rad.md`. The operational facts:
+
+- **One PageMethod for search**: `POST …/frmConsultaExternaCVM.aspx/ListarDocumentos`, JSON in, no session, no cookies, no `__VIEWSTATE`. `empresa` is a comma-separated list of six-digit zero-padded CVM codes **with a leading comma**; empty means the whole market. `dataDe`/`dataAte` (`dd/MM/yyyy`, both inclusive, only read with `periodo: "2"`) filter by **delivery date**.
+- **Discovery is a global sweep**: one request per day of the window with `empresa` empty, filtered locally against the watch list. No pagination, no truncation observed; the CVM code arrives in field 0 of every row, so routing is exact and one request per day serves a watch list of any size. There are no per-company queries. Reference volume: ~450 documents/day market-wide.
+- **The envelope is JSON, the content is not**: rows come in a single string, `$&&*` between rows, `$&` between fields, no escaping. The trailing row separator leaves an empty last element — discard it. **Validate exactly 12 fields per row and abort the collection on divergence**: a subject containing `$&` would corrupt the parse silently.
+- **HTTP is always 200.** Business errors and backend failures arrive as `temErro: true` with text in `msgErro` — that is a retryable `TransientSourceError`, never an empty result. A robot that only checks status codes records silence as "nothing new".
+- **Fields to parse**: 0 CVM code (hyphen-formatted, `00951-2`), 1 legal name, 2 category, 3 type, 4 species, 5 reference date, 6 delivery date, 7 status (`Ativo`/`Inativo`/`Cancelado`), 8 version, 9 modality (`AP`/`RE`), 10 action-icons HTML (carries the download arguments), 11 **subject**. Fields 4–6 embed a normalized sort key in `<spanOrder>` tags (`20260804`) — parse that, not the display format.
+- **Download** is a single GET (`frmDownloadDocumento.aspx?Tela=ext&numSequencia=…&numVersao=…&numProtocolo=…&descTipo=&CodigoInstituicao=1`) for every category; only the content differs (PDF or ZIP). The four arguments come from `OpenDownloadDocumentos(...)` in field 10.
+- **`Content-Type` always lies** (`text/html` for PDFs and ZIPs alike) and `Content-Disposition` names are useless. The real type comes from the content signature (`%PDF-`, `PK\x03\x04`); the on-disk name is built by the watcher.
+- **Status and modality are not server filters** — the API always returns `Ativo`, `Inativo`, and `Cancelado` together. Filtering is the watcher's responsibility, and a cancellation arriving for free is news, not noise.
+- **Category filtering on the server is a trap**: a wrong category code returns zero rows with no error, indistinguishable from a quiet company. Phase 0 always requests `EST_-1,IPE_-1_-1_-1` (everything) and filters locally, which makes the trap unreachable. If server-side filtering is ever added, the code table must be copied from `cboDocumentos` (in `rad/vocabulary.py`), never deduced.
+- **`SolicitarCaptcha: "S"` ends the run** with exit code `4`. It is not backoff material: there is no legitimate workaround, and insisting aggravates the trigger. Reduce frequency instead.
+- **The backend is fragile**: the WCF service behind the page drops under load (observed after ~a dozen calls in a few minutes, staying down for about an hour). Exponential backoff, a per-run request cap, and a minimum interval of **5 s** between requests.
+- **The system is recently migrated** (live since 06/07/2026): when the field count or envelope format diverges, fail loudly and alert — never degrade silently.
+
+## Invariants
+
+Violating any of these requires explicit, justified declaration in this document — silent divergence is what must never happen.
+
+- Identity/dedupe key is `(document_id, version)`; the content hash never dedupes.
+- Every run queries the whole window `[today - (N-1), today]`. There is no incremental interval; the watermark records completed progress and raises alerts, never feeds the interval.
+- A rediscovered document updates mutable fields and never triggers a new download. `status` in the manifest means "last state observed within the window".
+- Written file extension is decided by the actual response: content signature (decisive) > `Content-Disposition` > `Content-Type` (least trustworthy).
+- Validate content; a successful parse is not enough. Reject HTML bodies even when well-formed (an error page arrives with HTTP 200), reject empty ZIPs or entries containing `../`, require a plausible XML root, parse with external entity resolution disabled, cap response sizes.
+- Two roots: `data_root` (private — YAML, SQLite manifest, lock, FCA cache; must live on a filesystem local to the process, since SQLite over SMB/NFS has unreliable locking) and `documents_root` (the shareable archive). Download temporaries (`.part`) go in `documents_root/.tmp/` so `rename` is atomic.
+- Date directories are `yyyy-mm-dd`, zero-padded, keyed on **delivery date** — lexicographic order must equal chronological order.
+- `N` is the number of retained dates including today: `first_retained_date = today - (N-1)`. Purge, query window, and inbox all use this same frontier, or discovery re-downloads what purge deletes. Retention is a single global sliding window, configurable; per-category retention is backlog.
+- The lock is `flock`, not a pidfile: the kernel releases it when the owner dies, so there is no stale lock to detect and a crash never leaves the watcher stuck.
+- Download state machine `discovered → downloading → available`, with startup reconciliation. Filesystem and SQLite do not form an atomic transaction: idempotency rests on the manifest plus reconciliation, never on file existence.
+- YAML write protection: atomic temp file + `rename`, **and** a hash comparison of the on-disk content against what was loaded before renaming — if it changed, do not overwrite; record a visible conflict and preserve the human's edit. `mtime` is not enough. Comments must survive the rewrite (hence `ruamel.yaml`).
+- Timezone is anchored on the source, never the host or container — for "today", directory names, the retention frontier, the index, the watermark, and **log timestamps** (stdlib `logging` uses libc localtime and would stamp an event under one date while archiving it under another). Installed once at config load; an invalid zone name refuses to start rather than falling back.
+- Portability: nothing depends on Docker, systemd, cron, or any orchestrator. Running once from a shell with a config file must work. No embedded paths, CVM codes, or personal preferences. Logs to stdout/stderr by default. No credentials — the source is public and unauthenticated.
+- An isolated failure never kills the batch: a bad company or document is recorded and skipped. Severity ladder: `WARNING` transient and retryable, `ERROR` needs human action, `CRITICAL` the source contract probably changed.
+
+## Tests
+
+- **unit** — pure, no network, no disk beyond `tmp_path`.
+- **contract** — pins the source wire format against recorded samples; this is what detects the CVM changing something.
+- **integration** — the full flow against a fake server.
+- **live** — marked, deselected by default; re-measures the real source. The numbers in this repository are dated measurements, not permanent truths.
+
+An architecture test guarantees that nothing outside `rad/` imports `rad/`.
+
+## Deferred beyond Phase 0
+
+Per-category retention (the FRE is resubmitted several times per quarter at 8 MB each), alerts for publications by unwatched companies (the global sweep already sees them for free), server-side category filtering, and Docker/scheduler packaging — only after the MVP is validated by manual runs.
