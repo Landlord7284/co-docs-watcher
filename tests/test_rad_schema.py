@@ -152,6 +152,13 @@ def test_an_unknown_modality_aborts() -> None:
         parse_row(rad.row(modality="XX"))
 
 
+def test_all_three_modalities_are_known() -> None:
+    # AP and RE were measured 2026-08-24; RC (a resubmission demanded by the regulator)
+    # surfaced in the live suite on 2026-08-25 and aborted the collection, as promised.
+    for modality in ("AP", "RE", "RC"):
+        assert parse_row(rad.row(modality=modality)).modality == modality
+
+
 def test_a_version_that_is_not_an_integer_aborts() -> None:
     fields = rad.row().split(FIELD_SEPARATOR)
     fields[8] = "sete"

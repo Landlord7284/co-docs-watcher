@@ -1,0 +1,262 @@
+"""One run, start to finish — and the composition root.
+
+This is the only module in ``src/`` allowed to import ``rad/``: something has to build the
+adapter and hand it to the pipeline as a ``Source``, and it happens here, once, in
+:func:`open_source`. The architecture test carries that one-item allowlist.
+
+The seven steps run in a fixed order — **lock → reconcile → registry → discover → fetch →
+purge → inbox** — and the order is the design: reconciliation first so the run inherits a
+consistent archive, discovery's flags enacted immediately after the sweep so a cancellation
+observed today takes the file with it today, and the inbox last so it indexes what this run
+actually left on disk.
+
+Failure is graded, never all-or-nothing. A registry that cannot be refreshed blocks new
+registrations and nothing else; a document that cannot be fetched is recorded and skipped; a
+source that refuses the run — captcha, or the request budget burning out — stops the network
+work but still lets purge and inbox run, because neither needs the network and both keep the
+archive truthful. Only the captcha aborts the process with a code of its own: there is no
+legitimate workaround, and the operator has to hear about it.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+
+from co_docs_watcher.clock import Clock, RetentionWindow
+from co_docs_watcher.config import Config
+from co_docs_watcher.cvm.cache import RegistryCache
+from co_docs_watcher.errors import (
+    ExitCode,
+    RegistryError,
+    RequestBudgetExceededError,
+    TransientSourceError,
+)
+from co_docs_watcher.lock import RunLock
+from co_docs_watcher.manifest.db import open_manifest
+from co_docs_watcher.manifest.repo import Manifest
+from co_docs_watcher.models import SourceDocument
+from co_docs_watcher.pipeline import (
+    DiscoveryOutcome,
+    FetchOutcome,
+    InboxOutcome,
+    PurgeOutcome,
+    ReconcileOutcome,
+    archive_everything,
+    discover,
+    enact_flags,
+    fetch_pending,
+    purge,
+    reconcile,
+    regenerate,
+)
+from co_docs_watcher.rad import RadClient, RadSource
+from co_docs_watcher.rad.schema import parse_listing
+from co_docs_watcher.scope.models import WatchedCompany
+from co_docs_watcher.scope.store import WatchList
+from co_docs_watcher.source import Source
+
+__all__ = ["RunReport", "execute_run", "open_source", "probe_source"]
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class RunReport:
+    """What one run did, step by step. The CLI turns it into an exit code and nothing else."""
+
+    window: RetentionWindow
+    reconciled: ReconcileOutcome
+    registry_error: str | None
+    discovery: DiscoveryOutcome | None
+    fetch: FetchOutcome | None
+    purged: PurgeOutcome
+    inbox: InboxOutcome
+    interrupted: str | None
+
+    @property
+    def clean(self) -> bool:
+        """Whether nothing at all went wrong — the difference between exit 0 and exit 1."""
+        return (
+            self.registry_error is None
+            and self.interrupted is None
+            and not self.reconciled.failed
+            and self.discovery is not None
+            and self.fetch is not None
+            and not self.fetch.failed
+            and not self.fetch.retrying
+        )
+
+    @property
+    def exit_code(self) -> ExitCode:
+        return ExitCode.CLEAN if self.clean else ExitCode.PARTIAL_FAILURE
+
+
+@contextmanager
+def open_source(config: Config) -> Iterator[Source]:
+    """Build the concrete source. The single place the adapter is instantiated.
+
+    Listing and download share one client on purpose: the minimum interval and the request
+    budget only mean something if both halves draw from the same account.
+    """
+    with RadClient(
+        base_url=config.source_base_url,
+        min_request_interval=config.min_request_interval,
+        max_requests_per_run=config.max_requests_per_run,
+    ) as client:
+        yield RadSource(client)
+
+
+def probe_source(config: Config) -> str:
+    """One listing request for today, for ``doctor``: reachability, measured, not assumed.
+
+    Raises what the source raises — a captcha demand ends ``doctor`` with exit code 4 exactly
+    as it would end a run. A backend failure is not retried: one request is a probe, four is a
+    contribution to the outage.
+    """
+    clock = Clock.installed()
+    today = clock.today()
+    with RadClient(
+        base_url=config.source_base_url,
+        min_request_interval=config.min_request_interval,
+        max_requests_per_run=1,
+        retries=0,
+    ) as client:
+        listing = client.list_documents(today)
+    return f"answered the {today} listing with {len(parse_listing(listing))} row(s)"
+
+
+def execute_run(
+    config: Config,
+    *,
+    source: Source | None = None,
+    clock: Clock | None = None,
+    criteria: Callable[[SourceDocument], bool] = archive_everything,
+) -> RunReport:
+    """One run: the seven steps, in order, under the lock.
+
+    ``source`` and ``clock`` are injectable for tests; the CLI passes neither, which is what
+    makes this module the composition root. Raises ``LockHeldError`` (exit 3) without touching
+    anything, and ``CaptchaRequiredError`` (exit 4) after putting the queue back in order.
+    """
+    clock = Clock.installed() if clock is None else clock
+    window = clock.window(config.retention_days)
+    logger.info("run: window %s..%s (%d dates)", window.first, window.last, window.days)
+
+    with RunLock(config.lock_path):
+        connection = open_manifest(config.manifest_path)
+        try:
+            manifest = Manifest.over(connection, clock)
+            reconciled = reconcile(
+                manifest,
+                documents_root=config.documents_root,
+                staging_root=config.staging_root,
+            )
+            registry_error = _refresh_registry(config, clock)
+            watched = WatchList.load(config.watch_list_path).companies
+
+            if source is None:
+                with open_source(config) as built:
+                    discovery, fetched, interrupted = _observe_and_fetch(
+                        built, manifest, config=config, window=window,
+                        watched=watched, criteria=criteria,
+                    )
+            else:
+                discovery, fetched, interrupted = _observe_and_fetch(
+                    source, manifest, config=config, window=window,
+                    watched=watched, criteria=criteria,
+                )
+
+            purged = purge(
+                manifest,
+                documents_root=config.documents_root,
+                inbox_root=config.inbox_root,
+                window=window,
+            )
+            inbox = regenerate(manifest, inbox_root=config.inbox_root, window=window)
+        finally:
+            connection.close()
+
+    report = RunReport(
+        window=window,
+        reconciled=reconciled,
+        registry_error=registry_error,
+        discovery=discovery,
+        fetch=fetched,
+        purged=purged,
+        inbox=inbox,
+        interrupted=interrupted,
+    )
+    logger.log(
+        logging.INFO if report.clean else logging.WARNING,
+        "run: finished %s",
+        "clean" if report.clean else "with isolated failures",
+    )
+    return report
+
+
+def _observe_and_fetch(
+    source: Source,
+    manifest: Manifest,
+    *,
+    config: Config,
+    window: RetentionWindow,
+    watched: tuple[WatchedCompany, ...],
+    criteria: Callable[[SourceDocument], bool],
+) -> tuple[DiscoveryOutcome | None, FetchOutcome | None, str | None]:
+    """The two steps that talk to the source, sharing its refusals.
+
+    A refused run — the request budget burning out, or every listing attempt failing — ends
+    the network work but not the run: purge and inbox still owe the archive their pass. The
+    captcha is not caught anywhere: it propagates, and the process exits 4.
+    """
+    discovery: DiscoveryOutcome | None = None
+    fetched: FetchOutcome | None = None
+    try:
+        discovery = discover(
+            source, manifest, window=window, watched=watched, criteria=criteria
+        )
+    except (RequestBudgetExceededError, TransientSourceError) as error:
+        logger.log(error.severity, "discovery did not complete: %s", error)
+        return discovery, fetched, str(error)
+
+    # The same enactment reconciliation performs, run again immediately: a cancellation
+    # observed by this sweep takes its file with it today, not on the next start.
+    enact_flags(manifest, documents_root=config.documents_root)
+
+    try:
+        fetched = fetch_pending(
+            source,
+            manifest,
+            documents_root=config.documents_root,
+            staging_root=config.staging_root,
+            watched=watched,
+        )
+    except RequestBudgetExceededError as error:
+        # The queue was already put back in order by the fetch step itself.
+        logger.warning("fetch did not complete: %s", error)
+        return discovery, fetched, str(error)
+    return discovery, fetched, None
+
+
+def _refresh_registry(config: Config, clock: Clock) -> str | None:
+    """Refresh the FCA cache if stale. Failure blocks new registrations, never monitoring.
+
+    The watch list persists the resolved prefix of every company, so a run needs no registry
+    at all — what a failed refresh costs is ``add``, and the run says so instead of dying.
+    """
+    cache = RegistryCache(
+        config.registry_cache_root, max_age_days=config.registry_max_age_days
+    )
+    try:
+        cache.load(now=clock.now())
+    except RegistryError as error:
+        logger.warning(
+            "registry: %s; monitoring continues on the watch list alone, "
+            "but `add` will refuse until a package can be fetched",
+            error,
+        )
+        return str(error)
+    return None

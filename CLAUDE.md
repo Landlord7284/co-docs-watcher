@@ -10,7 +10,7 @@ The product is a **reading queue for people**. Success is measured by opening th
 
 Out of scope: parsing document content, long-term preservation, and any heuristic correlation between versions — the source provides supersession ready-made.
 
-The repository currently contains the accepted architecture; the code described below is the Phase 0 design to be implemented.
+The repository contains the Phase 0 implementation of the architecture described below.
 
 ## Documentation
 
@@ -77,6 +77,7 @@ Config discovery chain, in order: `--config` → `$CO_WATCHER_CONFIG` → `./con
 | `source.timezone` | `America/Sao_Paulo` | anchors dates, directory names, and log timestamps |
 | `source.min_request_interval` | `5.0` | seconds between requests; the backend is fragile |
 | `source.max_requests_per_run` | `200` | safety fuse for a single run |
+| `source.base_url` | `https://www.rad.cvm.gov.br/ENETWeb/` | overridden only to point a test server or a mirror |
 
 `[prefix_overrides]` is a section of its own, keyed by CVM code — `"003549" = "SCHLOSSER"` — and settles a folder name the resolver got typographically right and humanly wrong. Its keys are data rather than schema: this is the single place where an unknown key is not a typo. Values are validated, never sanitized, because an override is a deliberate act and repairing one quietly would name a folder after something nobody wrote.
 
@@ -236,7 +237,7 @@ Full contract, with measurement dates and payload examples, in `docs/fonte-rad.m
 - **Discovery is a global sweep**: one request per day of the window with `empresa` empty, filtered locally against the watch list. No pagination, no truncation observed; the CVM code arrives in field 0 of every row, so routing is exact and one request per day serves a watch list of any size. There are no per-company queries. Reference volume: ~450 documents/day market-wide.
 - **The envelope is JSON, the content is not**: rows come in a single string, `$&&*` between rows, `$&` between fields, no escaping. The trailing row separator leaves an empty last element — discard it. **Validate exactly 12 fields per row and abort the collection on divergence**: a subject containing `$&` would corrupt the parse silently.
 - **HTTP is always 200.** Business errors and backend failures arrive as `temErro: true` with text in `msgErro` — that is a retryable `TransientSourceError`, never an empty result. A robot that only checks status codes records silence as "nothing new".
-- **Fields to parse**: 0 CVM code (hyphen-formatted, `00951-2`), 1 legal name, 2 category, 3 type, 4 species, 5 reference date, 6 delivery date, 7 status (`Ativo`/`Inativo`/`Cancelado`), 8 version, 9 modality (`AP`/`RE`), 10 action-icons HTML (carries the download arguments), 11 **subject**. Fields 4–6 embed a normalized sort key in `<spanOrder>` tags (`20260804`) — parse that, not the display format.
+- **Fields to parse**: 0 CVM code (hyphen-formatted, `00951-2`), 1 legal name, 2 category, 3 type, 4 species, 5 reference date, 6 delivery date, 7 status (`Ativo`/`Inativo`/`Cancelado`), 8 version, 9 modality (`AP`/`RE`/`RC`, the third observed 2026-08-25), 10 action-icons HTML (carries the download arguments), 11 **subject**. Fields 4–6 embed a normalized sort key in `<spanOrder>` tags (`20260804`) — parse that, not the display format.
 - **Download** is a single GET (`frmDownloadDocumento.aspx?Tela=ext&numSequencia=…&numVersao=…&numProtocolo=…&descTipo=&CodigoInstituicao=1`) for every category; only the content differs (PDF or ZIP). The four arguments come from `OpenDownloadDocumentos(...)` in field 10.
 - **`Content-Type` always lies** (`text/html` for PDFs and ZIPs alike) and `Content-Disposition` names are useless. The real type comes from the content signature (`%PDF-`, `PK\x03\x04`); the on-disk name is built by the watcher.
 - **Status and modality are not server filters** — the API always returns `Ativo`, `Inativo`, and `Cancelado` together. Filtering is the watcher's responsibility, and a cancellation arriving for free is news, not noise.
