@@ -38,3 +38,7 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# The vocabulary is copied wire data; labels are not wrapped to fit the line length.
+"src/co_docs_watcher/rad/vocabulary.py" = ["E501"]
