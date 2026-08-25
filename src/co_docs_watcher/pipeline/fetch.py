@@ -51,6 +51,7 @@ __all__ = [
     "category_component",
     "document_file_name",
     "fetch_pending",
+    "sha256_of",
 ]
 
 logger = logging.getLogger(__name__)
@@ -220,7 +221,7 @@ def _place(
         FileRecord.of(
             delivered,
             relative_path=path.relative_to(documents_root),
-            sha256=_sha256(path),
+            sha256=sha256_of(path),
             size_bytes=path.stat().st_size,
         )
         for delivered, path in placed
@@ -316,7 +317,8 @@ def _split_words(text: str) -> list[str]:
     return [word for word in _NON_ALPHANUMERIC.split(text) if word]
 
 
-def _sha256(path: Path) -> str:
+def sha256_of(path: Path) -> str:
+    """The content hash of one file. Integrity and auditing — never deduplication."""
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         while chunk := stream.read(_CHUNK):
