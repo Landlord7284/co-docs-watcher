@@ -121,7 +121,9 @@ Step 7 is not zeal: a document downloaded on Monday can be deactivated on Wednes
 
 ### SQLite
 
-`PRAGMA journal_mode = WAL`, `synchronous = NORMAL`, `foreign_keys = ON`, `busy_timeout = 30000`. Migrations versioned by `PRAGMA user_version`. A schema newer than the build understands **refuses to open**, never degrades. No HTTP request happens inside an open transaction: pages are collected in memory first.
+`PRAGMA journal_mode = WAL`, `synchronous = NORMAL`, `foreign_keys = ON`, `busy_timeout = 30000`. Migrations versioned by `PRAGMA user_version`. A schema newer than the build understands **refuses to open**, never degrades. No HTTP request happens inside an open transaction: pages are collected in memory first, and every write goes through an explicit `BEGIN IMMEDIATE`.
+
+Four tables: `documents` (keyed `(document_id, version)`, carrying the source's `status` and our `local_state`), `document_files` (one row per file, with `sha256`, size, and the stability marker), `download_attempts` (what the retry budget is spent against), and `sync_state` (the watermark). The file rows cascade on delete, which is why `foreign_keys = ON` is not decoration.
 
 ## Archive layout
 
