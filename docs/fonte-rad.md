@@ -105,7 +105,7 @@ vazio — descartar antes de contar.
 | 1 | Razão social | `PETROLEO BRASILEIRO S.A. PETROBRAS` |
 | 2 | Categoria | `Fato Relevante` |
 | 3 | Tipo | `Outros Comunicados…` |
-| 4 | Espécie | `<spanOrder></spanOrder> -` |
+| 4 | Espécie | `<spanOrder>Processo Judicial movido pelo Estado do Piauí</spanOrder> - ` |
 | 5 | Data de referência | `<spanOrder>20261231</spanOrder> 2026` |
 | 6 | Data de entrega | `<spanOrder>20260804</spanOrder> 04/08/2026 15:37` |
 | 7 | Status | `Ativo` / `Inativo` / `Cancelado` |
@@ -121,6 +121,15 @@ Preenchido nos documentos eventuais, vazio nos estruturados.
 para renderizar e presente para parsear: `20260804` é a data já normalizada, sem
 precisar interpretar `dd/MM/yyyy` nem os formatos alternativos de data de
 referência.
+
+No campo 4 a chave **não é normalizada**: carrega o próprio texto da espécie,
+livre (`Documento Diversos`, `424B2`, o assunto repetido nos eventuais), e vem
+vazia nos estruturados — medido em 24/08/2026 sobre o dia inteiro de 21/08.
+Campos ausentes de exibição (tipo, espécie) chegam como ` - `.
+
+Medido no mesmo dia inteiro (479 linhas): **todas** com exatamente 12 campos e
+**todas** — inclusive `Inativo` e `Cancelado` — com `OpenDownloadDocumentos` no
+campo 10. Um cancelamento continua endereçável.
 
 ---
 
@@ -152,7 +161,13 @@ Volume de referência: **~450 documentos/dia** no mercado inteiro.
 ## 4. Download
 
 O campo 10 carrega `OpenDownloadDocumentos(numSequencia, numVersao, numProtocolo, descTipo)`.
-Os quatro argumentos montam uma URL GET direta:
+No HTML real os quatro argumentos vêm **entre aspas simples** —
+`OpenDownloadDocumentos('1084782','1','1560076','IPE')` (medido 24/08/2026); a
+assinatura sem aspas acima é a do JavaScript da página. O `descTipo` é a sigla
+da categoria ou vazio (dia 21/08: `IPE` em 456 linhas, vazio em 19, `ITR` em 2,
+`FCA` em 2) e **não é necessário**: os downloads medidos funcionaram com
+`descTipo=` vazio em todas as categorias. Os quatro argumentos montam uma URL
+GET direta:
 
 ```
 GET frmDownloadDocumento.aspx
@@ -239,7 +254,9 @@ Três consequências:
    sigla da categoria, ano de referência, versão, sequencial, dígito.
 
 `numProtocolo` precisa ser **persistido**, não derivado: é argumento obrigatório
-do download.
+do download. A decomposição estrutural acima vale para os **estruturados**; nos
+eventuais o `numProtocolo` é um número simples (`1560076`), sem estrutura
+aparente (medido 24/08/2026).
 
 Custo operacional real: sete entregas do mesmo FRE em três meses, 8,4 MB cada.
 
@@ -268,6 +285,11 @@ EST_11  Informe do Código de Governança
 IPE_-1_-1_-1   TODOS os Documentos com Informações Eventuais
 IPE_44_-1_-1   Acordo de Acionistas
 ```
+
+O `cboDocumentos` completo — 8 `EST_*` + 524 `IPE_*_*_*` — foi copiado
+integralmente para `rad/vocabulary.py` em 24/08/2026. O combo vem no hidden
+`hdnComboCategoriaTipoEspecie`, duplamente escapado; o `<select>` em si chega
+vazio no HTML.
 
 **Status e Tipo de Entrega não são filtros de servidor.** No JavaScript eles só
 aparecem sendo inicializados como widgets select2; nunca entram no payload. A API
