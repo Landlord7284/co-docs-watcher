@@ -100,7 +100,7 @@ src/co_docs_watcher/
 │   ├── schema.py     the 12 fields -> SourceDocument
 │   ├── download.py   GET, content sniffing, ZIP extraction
 │   └── vocabulary.py category table copied from cboDocumentos
-├── manifest/         db.py (connection, pragmas, migrations) + repo.py
+├── manifest/         db.py (connection, pragmas, migrations) + repo.py (repositories)
 ├── scope/            companies.yaml, models, resolver
 └── pipeline/         discover, fetch, reconcile, purge, inbox
 ```
