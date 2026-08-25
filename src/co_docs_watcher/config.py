@@ -17,8 +17,8 @@ watcher refuses to start rather than quietly moving down the chain.
 
 Roots may be written relative, and are then resolved against the directory of the
 configuration file itself — a project-local installation is a checkout with a ``config.toml``
-naming ``var/data`` and ``var/documents``, and it archives beside that file wherever the
-command is typed from.
+naming ``var/data``, ``var/documents`` and ``var/logs``, and it archives beside that file
+wherever the command is typed from.
 
 Anything invalid — unreadable TOML, an unknown key, a timezone name the system does not
 know — raises ``ConfigError`` and the CLI exits ``2``.
@@ -42,6 +42,8 @@ from co_docs_watcher.text import normalize_cvm_code
 
 __all__ = [
     "CONFIG_ENV_VAR",
+    "DEFAULT_LOG_BACKUPS",
+    "DEFAULT_LOG_MAX_BYTES",
     "DEFAULT_MAX_REQUESTS_PER_RUN",
     "DEFAULT_MIN_REQUEST_INTERVAL",
     "DEFAULT_REGISTRY_MAX_AGE_DAYS",
@@ -80,6 +82,17 @@ DEFAULT_REGISTRY_MAX_AGE_DAYS = 7
 #: Relative and deliberately unusable-by-accident: reaching these means the warning fired.
 DEFAULT_DATA_ROOT = Path("var/data")
 DEFAULT_DOCUMENTS_ROOT = Path("var/documents")
+DEFAULT_LOGS_ROOT = Path("var/logs")
+
+#: The one file under ``logs_root``. Named after the program rather than after the run, so
+#: that the rotation below is the only thing that ever creates a second file there.
+LOG_FILE_NAME = "co-docs-watcher.log"
+
+#: Bytes the log file reaches before it is rotated, and how many rotations are kept. A
+#: watcher writes a few dozen lines per run, so the defaults hold months of history; what
+#: they buy is the guarantee that an unattended archive never fills its filesystem with log.
+DEFAULT_LOG_MAX_BYTES = 5 * 1024 * 1024
+DEFAULT_LOG_BACKUPS = 5
 
 #: Folder-name overrides, keyed by CVM code. The keys are data, not schema, so this section is
 #: the one place where an unknown key is not a typo.
@@ -89,7 +102,8 @@ PREFIX_OVERRIDES_SECTION = "prefix_overrides"
 _PREFIX_RULE = re.compile(r"^[A-Z0-9][A-Z0-9-]{0,31}$")
 
 _SCHEMA: dict[str, set[str]] = {
-    "paths": {"data_root", "documents_root"},
+    "paths": {"data_root", "documents_root", "logs_root"},
+    "logging": {"max_bytes", "backups"},
     "retention": {"days"},
     "registry": {"max_age_days"},
     "source": {"timezone", "min_request_interval", "max_requests_per_run", "base_url"},
@@ -105,12 +119,20 @@ class Config:
     ``documents_root`` is the shareable archive, and holds ``.tmp/`` so that placement stays an
     atomic ``rename`` within one filesystem.
 
+    ``logs_root`` holds the log file. It is a root of its own rather than a directory under
+    either of the other two: the log is neither private state the watcher reads back nor part
+    of the archive people are given, and an operator who mounts the three somewhere else
+    mounts them separately. Logging to the streams is unconditional; the file is a copy.
+
     ``origin`` is the file the values came from, or ``None`` when the built-in defaults were
     used — which is what makes "am I looking at the archive I think I am?" answerable.
     """
 
     data_root: Path
     documents_root: Path
+    logs_root: Path
+    log_max_bytes: int
+    log_backups: int
     timezone: ZoneInfo
     retention_days: int
     min_request_interval: float
@@ -151,6 +173,10 @@ class Config:
     @property
     def inbox_root(self) -> Path:
         return self.documents_root / "_inbox"
+
+    @property
+    def log_path(self) -> Path:
+        return self.logs_root / LOG_FILE_NAME
 
 
 def discover_config_path(
@@ -209,6 +235,9 @@ def load_config(
         defaults = Config(
             data_root=cwd / DEFAULT_DATA_ROOT,
             documents_root=cwd / DEFAULT_DOCUMENTS_ROOT,
+            logs_root=cwd / DEFAULT_LOGS_ROOT,
+            log_max_bytes=DEFAULT_LOG_MAX_BYTES,
+            log_backups=DEFAULT_LOG_BACKUPS,
             timezone=_timezone(DEFAULT_TIMEZONE),
             retention_days=DEFAULT_RETENTION_DAYS,
             min_request_interval=DEFAULT_MIN_REQUEST_INTERVAL,
@@ -248,6 +277,7 @@ def _from_file(path: Path) -> Config:
 
     _reject_unknown_keys(raw, path)
     paths = _section(raw, "paths", path)
+    logging_section = _section(raw, "logging", path)
     retention = _section(raw, "retention", path)
     registry = _section(raw, "registry", path)
     source = _section(raw, "source", path)
@@ -255,6 +285,13 @@ def _from_file(path: Path) -> Config:
     return Config(
         data_root=_root_path(paths, "data_root", where="paths", path=path),
         documents_root=_root_path(paths, "documents_root", where="paths", path=path),
+        logs_root=_root_path(paths, "logs_root", where="paths", path=path),
+        log_max_bytes=_positive_int(
+            logging_section, "max_bytes", DEFAULT_LOG_MAX_BYTES, where="logging", path=path
+        ),
+        log_backups=_positive_int(
+            logging_section, "backups", DEFAULT_LOG_BACKUPS, where="logging", path=path
+        ),
         timezone=_timezone(
             _string(source, "timezone", DEFAULT_TIMEZONE, where="source", path=path)
         ),

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import zipfile
 from datetime import date
 from pathlib import Path
@@ -296,6 +297,53 @@ def test_a_malformed_xml_member_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(DocumentError, match="not well-formed"):
         fetch(client, document(), staged(tmp_path))  # type: ignore[arg-type]
+
+
+def test_a_member_that_declares_utf8_and_delivers_latin1_is_read_anyway(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The source writes ``encoding="utf-8"`` over ISO-8859-1 bytes; the filing is whole."""
+    mislabelled = (
+        "<?xml version='1.0' encoding='utf-8'?>"
+        "<DocumentoITR><Empresa>TRANSMISSORA ALIAN\u00c7A DE ENERGIA EL\u00c9TRICA</Empresa>"
+        "</DocumentoITR>"
+    ).encode("iso-8859-1")
+    client = FakeClient(build_zip((STABLE_XML, mislabelled), (GENERATED_PDF, PDF)))
+
+    with caplog.at_level(logging.WARNING):
+        delivery = fetch(client, document(), staged(tmp_path))  # type: ignore[arg-type]
+
+    by_name = {file.path.name: file for file in delivery.files}
+    assert set(by_name) == {STABLE_XML, GENERATED_PDF}
+    # Archived exactly as delivered: the wrong declaration is the publisher's, not ours.
+    assert by_name[STABLE_XML].path.read_bytes() == mislabelled
+    assert "declares an encoding it does not use" in caplog.text
+
+
+def test_a_member_broken_under_every_encoding_still_reports_the_declared_one(
+    tmp_path: Path,
+) -> None:
+    """The retry is for a wrong header, never a licence to accept a malformed member."""
+    client = FakeClient(build_zip(("FormularioCadastral.xml", "<a>\u00e7".encode("iso-8859-1"))))
+
+    with pytest.raises(DocumentError, match="not well-formed"):
+        fetch(client, document(), staged(tmp_path))  # type: ignore[arg-type]
+
+
+def test_an_ipe_envelope_that_lies_about_its_encoding_still_gives_up_its_extension(
+    tmp_path: Path,
+) -> None:
+    lying = (
+        "<?xml version='1.0' encoding='utf-8'?><Documento>"
+        "<DescricaoCategoria>Comunicado ao Mercado \u00e0s partes</DescricaoCategoria>"
+        "<ExtensaoArquivo>.pdf</ExtensaoArquivo></Documento>"
+    ).encode("iso-8859-1")
+    # A body no signature recognizes, so the envelope's declaration is the only hint left.
+    client = FakeClient(build_zip((IPE_ENVELOPE, lying), (IPE_ATTACHMENT, b"opaque bytes")))
+
+    delivery = fetch(client, document(), staged(tmp_path))  # type: ignore[arg-type]
+
+    assert [file.path.name for file in delivery.files] == ["document.pdf"]
 
 
 def test_an_xml_member_with_undefined_entities_is_rejected_not_resolved(tmp_path: Path) -> None:

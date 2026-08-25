@@ -278,6 +278,20 @@ relevante, testado do mesmo jeito, é **estável**.
 O robô não depende dele — os papéis são marcados pelo nome do membro, e um
 pacote sem cópia gerada é arquivado do mesmo jeito.
 
+**O XML estruturado do FRE declara `encoding="utf-8"` e chega em ISO-8859-1.**
+Medido em 25/08/2026 em dois pacotes — `020257FRE31-12-2026v6.xml`
+(`numSequencia` 161009, companhia 020257) e `021610FRE31-12-2026v7.xml`
+(`numSequencia` 161005, companhia 021610). A declaração da primeira linha diz
+`utf-8`; o primeiro caractere acentuado do arquivo é um byte ISO-8859-1 — no
+primeiro deles, o `\xC7` de "ALIANÇA", em `<RazaoSocialEmpresa>`, linha 5,
+coluna 42 — e é token inválido para qualquer parser que acredite na declaração. O
+`FormularioCadastral.xml` do mesmo pacote é ASCII puro e passa dos dois jeitos.
+
+Consequência: cada membro XML é validado sob a codificação declarada e, se isso
+falhar, sob ISO-8859-1, antes de o membro poder ser recusado. Os bytes vão para
+o arquivo como vieram, declaração errada inclusive: a validação decide se o
+membro pode ser guardado, nunca o que ele diz.
+
 Consequência: o hash é gravado **por arquivo**, com marcador de estabilidade, e
 serve integridade e auditoria — nunca deduplicação.
 

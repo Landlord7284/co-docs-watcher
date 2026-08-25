@@ -39,6 +39,7 @@ __all__ = [
     "AttemptRepository",
     "DocumentRecord",
     "DocumentRepository",
+    "FailedAttempt",
     "FileRecord",
     "FileRepository",
     "Manifest",
@@ -375,6 +376,14 @@ class FileRepository(_Repository):
         ]
 
 
+@dataclass(frozen=True, slots=True)
+class FailedAttempt:
+    """One failure, as it was recorded: when, and what the exception said."""
+
+    at: datetime
+    detail: str | None
+
+
 class AttemptRepository(_Repository):
     """Download attempts, which is what the retry budget is spent against."""
 
@@ -395,6 +404,24 @@ class AttemptRepository(_Repository):
             (*identity, str(AttemptOutcome.FAILURE)),
         ).fetchone()
         return int(row["n"])
+
+    def last_failure(self, identity: Identity) -> FailedAttempt | None:
+        """The most recent failure recorded against a document, or ``None`` if it had none.
+
+        The detail is the exception's own words, kept verbatim: a document that is waiting to
+        be retried, or that gave up, has a reason, and it should be readable without opening
+        the manifest by hand.
+        """
+        row = self._connection.execute(
+            "SELECT attempted_at, detail FROM download_attempts WHERE document_id = ? AND "
+            "version = ? AND outcome = ? ORDER BY attempt_id DESC LIMIT 1",
+            (*identity, str(AttemptOutcome.FAILURE)),
+        ).fetchone()
+        if row is None:
+            return None
+        return FailedAttempt(
+            at=datetime.fromisoformat(row["attempted_at"]), detail=row["detail"]
+        )
 
     def attempts(self, identity: Identity) -> int:
         row = self._connection.execute(

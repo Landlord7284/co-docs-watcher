@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from co_docs_watcher.clock import RetentionWindow, window_ending
-from co_docs_watcher.config import Config
+from co_docs_watcher.config import DEFAULT_LOG_BACKUPS, DEFAULT_LOG_MAX_BYTES, Config
 from co_docs_watcher.errors import (
     CaptchaRequiredError,
     DocumentError,
@@ -74,6 +74,9 @@ def config(tmp_path: Path) -> Config:
     return Config(
         data_root=data_root,
         documents_root=tmp_path / "documents",
+        logs_root=tmp_path / "logs",
+        log_max_bytes=DEFAULT_LOG_MAX_BYTES,
+        log_backups=DEFAULT_LOG_BACKUPS,
         timezone=TIMEZONE,
         retention_days=7,
         min_request_interval=0.01,

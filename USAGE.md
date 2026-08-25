@@ -29,8 +29,8 @@ The configuration file is discovered in this order — first hit wins:
 A path named by `--config` or `$CO_WATCHER_CONFIG` that does not exist refuses to start.
 Unknown sections and unknown keys are rejected.
 
-`data_root` and `documents_root` may be absolute, or relative to the **directory of the
-configuration file** — not to the directory you happen to run from. So a project-local
+`data_root`, `documents_root` and `logs_root` may be absolute, or relative to the
+**directory of the configuration file** — not to the directory you happen to run from. So a project-local
 install is a checkout with a `config.toml` beside it, archiving into its own `var/`,
 and it points at the same archive whether you run it by hand or from cron.
 
@@ -44,6 +44,11 @@ cp config.example.toml config.toml
 [paths]
 data_root = "var/data"           # private: watch list, manifest, lock, cache
 documents_root = "var/documents" # the shareable archive
+logs_root = "var/logs"           # holds co-docs-watcher.log
+
+[logging]
+max_bytes = 5242880            # bytes before the log file rotates
+backups = 5                    # rotations kept
 
 [retention]
 days = 7                       # retained dates, including today
@@ -157,6 +162,19 @@ exists for shrinking the window without sweeping.
 Prints the configuration in use, the current window, the number of watched companies, the
 document counts per state, and the date of the last completed sweep. Touches nothing and
 talks to no one.
+
+Anything the archive still owes — queued, interrupted mid-download, or given up on — is
+listed one per line with the last failure recorded against it, verbatim:
+
+```
+documents: 41 (1 discovered, 1 downloading, 39 available)
+pending (2):
+  (161009, 6) discovered 020257 FRE - Formulário de Referência delivered 2026-08-20
+    2 failed attempt(s), last 2026-08-25 14:53:06-03:00: document (161009, 6): member
+    '020257FRE31-12-2026v6.xml' is not well-formed XML: not well-formed (invalid token)
+```
+
+A document is retried for three failed attempts, one per run, and then stays `failed`.
 
 ## The watch list
 

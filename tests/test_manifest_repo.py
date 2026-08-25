@@ -271,6 +271,22 @@ def test_attempts_are_counted_for_the_retry_budget(manifest: Manifest) -> None:
     assert manifest.attempts.failures((999, 1)) == 0
 
 
+def test_the_last_failure_is_readable_without_opening_the_manifest(manifest: Manifest) -> None:
+    document = make_document()
+    manifest.documents.upsert_observed(document)
+    assert manifest.attempts.last_failure(document.identity) is None
+
+    manifest.attempts.record(document.identity, AttemptOutcome.FAILURE, "temErro: indisponivel")
+    manifest.attempts.record(document.identity, AttemptOutcome.FAILURE, "not well-formed XML")
+    # A later success does not erase why the document was waiting.
+    manifest.attempts.record(document.identity, AttemptOutcome.SUCCESS)
+
+    failure = manifest.attempts.last_failure(document.identity)
+    assert failure is not None
+    assert failure.detail == "not well-formed XML"
+    assert failure.at.tzinfo is not None
+
+
 def test_the_watermark_records_progress(manifest: Manifest) -> None:
     assert manifest.state.watermark() is None
     manifest.state.set_watermark(date(2026, 8, 24))

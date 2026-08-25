@@ -11,6 +11,9 @@ archives it has archived an outage.
 A successful parse is not enough either. ZIP members are validated before a single byte is
 written — no empty containers, no ``..`` or absolute paths, a plausible root on every XML
 member — and XML is inspected with the stdlib parser, which resolves no external entities.
+A member that declares one encoding and arrives in another is read under the one it actually
+uses instead of being refused: the declaration is the publisher's mistake, and the filing
+behind it is whole.
 
 The generated reading PDF inside a structured ZIP carries the generation instant in its
 name, so it differs between two downloads of the same document: it is marked
@@ -83,6 +86,16 @@ _PLAUSIBLE_EXTENSION = re.compile(r"^\.[0-9A-Za-z]{1,8}$")
 #: Signature to extension, for a member. Only what this build can vouch for: anything else
 #: falls through to the declared hint and, failing that, keeps its origin name.
 _MEMBER_EXTENSIONS = ((_MAGIC_PDF, ".pdf"), (_MAGIC_ZIP, ".zip"))
+
+#: Encoding overrides tried when reading an XML member, in order. ``None`` means "believe the
+#: document's own declaration", which is the first thing tried and the usual answer. The
+#: fallback exists because a member of this source can declare ``utf-8`` and arrive in
+#: ISO-8859-1 — see :func:`_walk_xml_member`.
+_XML_ENCODINGS: tuple[str | None, ...] = (None, "iso-8859-1")
+
+#: How much of an XML member is fed to the parser at a time. A structured package holds
+#: members of tens of megabytes, and none of them is ever held whole in memory.
+_XML_CHUNK = 1024 * 1024
 
 _DRIVE_LETTER = re.compile(r"^[A-Za-z]:")
 
@@ -244,19 +257,27 @@ def _member_extension(content: bytes, declared: str | None) -> str | None:
 def _declared_extension(archive: zipfile.ZipFile, envelope: zipfile.ZipInfo) -> str | None:
     """``ExtensaoArquivo`` from the envelope, if it is something a file may be named with.
 
-    The envelope has already been validated as XML by the time this runs, so a parse error
-    here would be a race with nothing; it is still caught, because a hint that cannot be
-    read is a missing hint and never a failed delivery.
+    The envelope has already been validated as XML by the time this runs — under one of the
+    same encodings, which is why they are tried again here in the same order. A parse error
+    would therefore be a race with nothing; it is still caught, because a hint that cannot
+    be read is a missing hint and never a failed delivery.
     """
     try:
-        with archive.open(envelope) as stream:
-            for _, element in ElementTree.iterparse(stream, events=("end",)):
-                tag = element.tag if isinstance(element.tag, str) else ""
-                if tag.rpartition("}")[2] == _IPE_DECLARED_EXTENSION_ELEMENT:
-                    declared = (element.text or "").strip().lower()
-                    return declared if _PLAUSIBLE_EXTENSION.match(declared) else None
-                element.clear()
-    except (ElementTree.ParseError, OSError):
+        content = archive.read(envelope)
+    except OSError:
+        return None
+    for encoding in _XML_ENCODINGS:
+        try:
+            root = ElementTree.fromstring(
+                content, parser=ElementTree.XMLParser(encoding=encoding)
+            )
+        except ElementTree.ParseError:
+            continue
+        for element in root.iter():
+            tag = element.tag if isinstance(element.tag, str) else ""
+            if tag.rpartition("}")[2] == _IPE_DECLARED_EXTENSION_ELEMENT:
+                declared = (element.text or "").strip().lower()
+                return declared if _PLAUSIBLE_EXTENSION.match(declared) else None
         return None
     return None
 
@@ -274,31 +295,88 @@ def _validate_member_name(name: str, label: str) -> None:
         raise DocumentError(f"{label}: the container holds an unsafe member name: {name!r}")
 
 
+class _RootTag:
+    """A parser target that walks a member without building anything from it.
+
+    Only the first tag is kept. What validation asks of an XML member is whether it parses
+    from end to end and whether its root is a filing rather than an HTML page in disguise,
+    and neither question needs the elements that already closed — so none are retained, and
+    a member of tens of megabytes is validated in constant memory.
+    """
+
+    def __init__(self) -> None:
+        self.root_tag: str | None = None
+
+    def start(self, tag: str, attrib: dict[str, str]) -> None:
+        if self.root_tag is None:
+            self.root_tag = tag
+
+    def end(self, tag: str) -> None:
+        """Required by the parser target protocol; a closed element is nothing to us."""
+
+    def data(self, data: str) -> None:
+        """Required by the parser target protocol; text is nothing to us."""
+
+    def close(self) -> str | None:
+        return self.root_tag
+
+
 def _require_plausible_xml(archive: zipfile.ZipFile, info: zipfile.ZipInfo, label: str) -> None:
     """An XML member must parse whole, with a root that is not HTML in disguise.
 
     A successful open is not enough: the whole member is walked, so truncation and entity
     tricks surface here instead of at whoever reads the archive later. ``ElementTree``
-    resolves no external entities — a reference to one is a parse error, never a fetch —
-    and finished elements are discarded as they close, so a large member is validated
-    without holding its tree.
+    resolves no external entities — a reference to one is a parse error, never a fetch.
     """
-    root_tag: str | None = None
-    with archive.open(info) as stream:
-        try:
-            for event, element in ElementTree.iterparse(stream, events=("start", "end")):
-                if root_tag is None:
-                    root_tag = element.tag if isinstance(element.tag, str) else ""
-                if event == "end":
-                    element.clear()
-        except ElementTree.ParseError as error:
-            raise DocumentError(
-                f"{label}: member {info.filename!r} is not well-formed XML: {error}"
-            ) from error
+    root_tag = _walk_xml_member(archive, info, label)
     if root_tag is None:
         raise DocumentError(f"{label}: member {info.filename!r} has no XML root")
     if root_tag.rpartition("}")[2].lower() == "html":
         raise DocumentError(f"{label}: member {info.filename!r} is an HTML page, not a filing")
+
+
+def _walk_xml_member(
+    archive: zipfile.ZipFile, info: zipfile.ZipInfo, label: str
+) -> str | None:
+    """Parse one member from end to end and return its root tag.
+
+    The declaration is believed first and the parse is retried under ISO-8859-1 when it
+    fails, because a member of this source can say ``encoding="utf-8"`` and deliver
+    ISO-8859-1: the first accented letter of a company name is then an invalid token, and a
+    filing that is whole, readable and correct in every other respect would be refused over
+    a header the publisher wrote wrong. The retry is narrow by construction — ISO-8859-1
+    decodes every byte, so a member that still fails to parse is malformed in structure and
+    not merely mislabelled, and the error reported is the first one, under the encoding the
+    document itself claimed.
+
+    Nothing is rewritten: the bytes reaching the archive are the bytes delivered, wrong
+    declaration included. This decides whether a member may be stored, never what it says.
+    """
+    first: ElementTree.ParseError | None = None
+    for encoding in _XML_ENCODINGS:
+        target = _RootTag()
+        parser = ElementTree.XMLParser(target=target, encoding=encoding)
+        try:
+            with archive.open(info) as stream:
+                while chunk := stream.read(_XML_CHUNK):
+                    parser.feed(chunk)
+                root_tag = parser.close()
+        except ElementTree.ParseError as error:
+            if first is None:
+                first = error
+            continue
+        if encoding is not None:
+            logger.warning(
+                "%s: member %r declares an encoding it does not use and was read as %s "
+                "instead; it is archived exactly as delivered",
+                label,
+                info.filename,
+                encoding,
+            )
+        return root_tag
+    raise DocumentError(
+        f"{label}: member {info.filename!r} is not well-formed XML: {first}"
+    ) from first
 
 
 def _looks_like_html(content: bytes) -> bool:

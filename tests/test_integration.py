@@ -49,6 +49,7 @@ class Site:
     config: Path
     data_root: Path
     documents_root: Path
+    logs_root: Path
     server: FakeRad
 
     def cli(self, *args: str) -> int:
@@ -59,6 +60,7 @@ class Site:
             "[paths]\n"
             f'data_root = "{self.data_root}"\n'
             f'documents_root = "{self.documents_root}"\n'
+            f'logs_root = "{self.logs_root}"\n'
             "[retention]\n"
             f"days = {retention_days}\n"
             "[source]\n"
@@ -103,6 +105,7 @@ def site(tmp_path: Path, server: FakeRad) -> Site:
         config=tmp_path / "config.toml",
         data_root=data_root,
         documents_root=tmp_path / "documents",
+        logs_root=tmp_path / "logs",
         server=server,
     )
     site.write_config()
@@ -332,3 +335,6 @@ def test_run_against_the_fake_server_as_a_subprocess(site: Site) -> None:
     finished = run_cli(site, "run")
     assert finished.returncode == 0, finished.stderr
     assert (site.day_dir(TODAY) / "PETR" / "Fato-Relevante_101_V01.pdf").is_file()
+    # The streams are what the operator watched; the file is what answers the question later.
+    written = (site.logs_root / "co-docs-watcher.log").read_text(encoding="utf-8")
+    assert "run: finished clean" in written

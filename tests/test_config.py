@@ -9,6 +9,8 @@ import pytest
 
 from co_docs_watcher.config import (
     CONFIG_ENV_VAR,
+    DEFAULT_LOG_BACKUPS,
+    DEFAULT_LOG_MAX_BYTES,
     DEFAULT_MAX_REQUESTS_PER_RUN,
     DEFAULT_MIN_REQUEST_INTERVAL,
     DEFAULT_REGISTRY_MAX_AGE_DAYS,
@@ -23,6 +25,7 @@ VALID = """
 [paths]
 data_root = "/srv/co-docs-watcher/data"
 documents_root = "/srv/co-docs-watcher/documents"
+logs_root = "/srv/co-docs-watcher/logs"
 """
 
 
@@ -156,6 +159,24 @@ def test_the_roots_derive_the_paths_the_rest_of_the_system_uses(tmp_path: Path) 
     assert config.inbox_root == Path("/srv/co-docs-watcher/documents/_inbox")
 
 
+def test_the_log_file_is_named_under_the_logs_root(tmp_path: Path) -> None:
+    write(tmp_path / "config.toml")
+    config = load_config(env={}, cwd=tmp_path, home=tmp_path)
+
+    assert config.logs_root == Path("/srv/co-docs-watcher/logs")
+    assert config.log_path == Path("/srv/co-docs-watcher/logs/co-docs-watcher.log")
+    assert config.log_max_bytes == DEFAULT_LOG_MAX_BYTES
+    assert config.log_backups == DEFAULT_LOG_BACKUPS
+
+
+def test_the_rotation_policy_is_configurable(tmp_path: Path) -> None:
+    write(tmp_path / "config.toml", VALID + "[logging]\nmax_bytes = 1048576\nbackups = 2\n")
+    config = load_config(env={}, cwd=tmp_path, home=tmp_path)
+
+    assert config.log_max_bytes == 1048576
+    assert config.log_backups == 2
+
+
 def test_a_relative_root_is_anchored_on_the_configuration_file(tmp_path: Path) -> None:
     """The project-local posture: a checkout that archives beside its own config file."""
     project = tmp_path / "project"
@@ -166,6 +187,7 @@ def test_a_relative_root_is_anchored_on_the_configuration_file(tmp_path: Path) -
 [paths]
 data_root = "var/data"
 documents_root = "var/documents"
+logs_root = "var/logs"
 """,
     )
     elsewhere = tmp_path / "elsewhere"
@@ -173,6 +195,7 @@ documents_root = "var/documents"
     config = load_config(project / "config.toml", env={}, cwd=elsewhere, home=elsewhere)
     assert config.data_root == project.resolve() / "var" / "data"
     assert config.documents_root == project.resolve() / "var" / "documents"
+    assert config.logs_root == project.resolve() / "var" / "logs"
 
 
 def test_a_relative_config_path_still_anchors_absolutely(
@@ -185,6 +208,7 @@ def test_a_relative_config_path_still_anchors_absolutely(
 [paths]
 data_root = "var/data"
 documents_root = "var/documents"
+logs_root = "var/logs"
 """,
     )
     monkeypatch.chdir(tmp_path)
@@ -200,6 +224,7 @@ def test_a_home_relative_root_is_expanded_and_accepted(tmp_path: Path) -> None:
 [paths]
 data_root = "~/watcher/data"
 documents_root = "~/watcher/documents"
+logs_root = "~/watcher/logs"
 """,
     )
     config = load_config(env={}, cwd=tmp_path, home=tmp_path)
@@ -211,9 +236,12 @@ documents_root = "~/watcher/documents"
     ("content", "match"),
     [
         ("[paths\n", "invalid TOML"),
-        ('[paths]\ndata_root = "/a"\n', "documents_root is required"),
-        ('[paths]\ndocuments_root = "/a"\n', "data_root is required"),
-        ('[paths]\ndata_root = ""\ndocuments_root = "/a"\n', "non-empty string"),
+        ('[paths]\ndata_root = "/a"\nlogs_root = "/c"\n', "documents_root is required"),
+        ('[paths]\ndocuments_root = "/a"\nlogs_root = "/c"\n', "data_root is required"),
+        ('[paths]\ndata_root = "/a"\ndocuments_root = "/b"\n', "logs_root is required"),
+        ('[paths]\ndata_root = ""\ndocuments_root = "/a"\nlogs_root = "/c"\n', "non-empty string"),
+        (VALID + "[logging]\nmax_bytes = 0\n", "integer >= 1"),
+        (VALID + "[logging]\nrotate = true\n", "unknown key"),
         (VALID + '[source]\ntimezone = "Mars/Olympus"\n', "unknown timezone"),
         (VALID + "[retention]\ndays = 0\n", "integer >= 1"),
         (VALID + '[retention]\ndays = "seven"\n', "integer >= 1"),

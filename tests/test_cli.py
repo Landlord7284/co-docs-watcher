@@ -14,8 +14,12 @@ from pathlib import Path
 import pytest
 
 from co_docs_watcher import cli
+from co_docs_watcher.config import load_config
 from co_docs_watcher.lock import RunLock
+from co_docs_watcher.manifest.db import open_manifest
+from co_docs_watcher.manifest.repo import AttemptOutcome, Manifest
 from tests.fca import build_package
+from tests.test_models import make_document
 
 WATCH_LIST = """\
 companies:
@@ -38,7 +42,8 @@ def config_file(tmp_path: Path) -> Path:
     path.write_text(
         "[paths]\n"
         f'data_root = "{data_root}"\n'
-        f'documents_root = "{tmp_path / "documents"}"\n',
+        f'documents_root = "{tmp_path / "documents"}"\n'
+        f'logs_root = "{tmp_path / "logs"}"\n',
         encoding="utf-8",
     )
     return path
@@ -213,3 +218,36 @@ def test_status_speaks_before_any_run_has_happened(
     out = capsys.readouterr().out
     assert "watched companies: 0" in out
     assert "no run has completed" in out
+
+
+def test_status_explains_why_each_pending_document_is_pending(
+    config_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A count answers "is anything missing?"; only the reason answers "why?"."""
+    config = load_config(config_file)
+    connection = open_manifest(config.manifest_path)
+    manifest = Manifest.over(connection)
+    waiting = make_document(document_id=161009, version=6, category="FRE")
+    untried = make_document(document_id=161010, version=1, category="ITR")
+    for document in (waiting, untried):
+        manifest.documents.upsert_observed(document)
+    manifest.attempts.record(waiting.identity, AttemptOutcome.FAILURE, "not well-formed XML")
+    connection.close()
+
+    assert cli.main(["--config", str(config_file), "status"]) == 0
+
+    out = capsys.readouterr().out
+    assert "pending (2):" in out
+    assert "(161009, 6) discovered" in out
+    assert "1 failed attempt(s)" in out and "not well-formed XML" in out
+    assert "not attempted yet" in out
+
+
+def test_status_says_nothing_about_pending_when_nothing_is_pending(
+    config_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config = load_config(config_file)
+    open_manifest(config.manifest_path).close()
+
+    assert cli.main(["--config", str(config_file), "status"]) == 0
+    assert "pending" not in capsys.readouterr().out

@@ -15,7 +15,7 @@
 # that lies. The only exception is [prefix_overrides], whose keys are data.
 
 [paths]
-# Both roots are REQUIRED. A relative root is resolved against the directory holding THIS
+# All three roots are REQUIRED. A relative root is resolved against the directory holding THIS
 # file, never against the directory the command was typed in — so a project-local install is
 # just a checkout with a config.toml beside it, and it archives in the same place whether you
 # run it by hand or from cron. Absolute paths are equally valid, and are what a system-wide
@@ -27,6 +27,17 @@ data_root = "var/data"
 # documents_root is the shareable archive, organized by delivery date, and holds .tmp/ so
 # that placing a downloaded file is an atomic rename within a single filesystem.
 documents_root = "var/documents"
+# logs_root holds the log file. A root of its own because it is neither private state the
+# watcher reads back nor part of what people are given, and it is mounted separately.
+logs_root = "var/logs"
+
+[logging]
+# Every line the watcher prints also goes to logs_root/co-docs-watcher.log, whatever
+# supervises the process. The streams are read while a run happens; the file answers the
+# question asked afterwards, when the one warning has scrolled away.
+# Bytes the file reaches before it rotates, and how many rotations are kept.
+max_bytes = 5242880
+backups = 5
 
 [retention]
 # N retained dates, counting today: first_retained_date = today - (N - 1). The same

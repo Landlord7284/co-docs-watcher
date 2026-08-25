@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import io
 import logging
 import time
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -26,6 +28,7 @@ def _clean_logging() -> None:
     root = logging.getLogger()
     for handler in list(root.handlers):
         root.removeHandler(handler)
+        handler.close()
 
 
 def record_at(created: float) -> logging.LogRecord:
@@ -91,3 +94,60 @@ def test_debug_is_silent_unless_asked(caplog: pytest.LogCaptureFixture) -> None:
     configure_logging(stdout=out, stderr=io.StringIO(), level=logging.DEBUG)
     logging.getLogger("co_docs_watcher.test").debug("payload dump")
     assert "payload dump" in out.getvalue()
+
+
+# --- The log file. ---
+
+
+def test_the_log_file_receives_progress_and_problems_alike(tmp_path: Path) -> None:
+    install_source_timezone(SAO_PAULO)
+    log_path = tmp_path / "logs" / "co-docs-watcher.log"
+    configure_logging(stdout=io.StringIO(), stderr=io.StringIO(), log_path=log_path)
+
+    logger = logging.getLogger("co_docs_watcher.test")
+    logger.info("swept 7 days")
+    logger.warning("source answered temErro")
+
+    written = log_path.read_text(encoding="utf-8")
+    # The two streams split by severity; the file is whole, so it can be read on its own.
+    assert "swept 7 days" in written
+    assert "temErro" in written
+
+
+def test_the_log_directory_is_created_rather_than_demanded(tmp_path: Path) -> None:
+    install_source_timezone(SAO_PAULO)
+    log_path = tmp_path / "absent" / "deeper" / "co-docs-watcher.log"
+    configure_logging(stdout=io.StringIO(), stderr=io.StringIO(), log_path=log_path)
+
+    logging.getLogger("co_docs_watcher.test").info("first line")
+    assert log_path.exists()
+
+
+def test_the_log_file_rotates_instead_of_growing_without_end(tmp_path: Path) -> None:
+    install_source_timezone(SAO_PAULO)
+    log_path = tmp_path / "logs" / "co-docs-watcher.log"
+    configure_logging(
+        stdout=io.StringIO(), stderr=io.StringIO(), log_path=log_path, max_bytes=512, backups=2
+    )
+
+    logger = logging.getLogger("co_docs_watcher.test")
+    for index in range(200):
+        logger.info("a line long enough to push the file past its cap: %d", index)
+
+    kept = sorted(path.name for path in log_path.parent.iterdir())
+    assert kept == ["co-docs-watcher.log", "co-docs-watcher.log.1", "co-docs-watcher.log.2"]
+    assert all(path.stat().st_size < 2048 for path in log_path.parent.iterdir())
+
+
+def test_a_log_file_that_cannot_be_opened_never_stops_the_run(tmp_path: Path) -> None:
+    install_source_timezone(SAO_PAULO)
+    blocked = tmp_path / "not-a-directory"
+    blocked.write_text("", encoding="utf-8")
+    out, err = io.StringIO(), io.StringIO()
+
+    with contextlib.redirect_stderr(err):
+        configure_logging(stdout=out, stderr=err, log_path=blocked / "co-docs-watcher.log")
+
+    logging.getLogger("co_docs_watcher.test").info("the run goes on")
+    assert "the run goes on" in out.getvalue()
+    assert "cannot write the log file" in err.getvalue()

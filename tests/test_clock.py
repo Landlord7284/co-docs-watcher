@@ -106,7 +106,7 @@ def test_the_timezone_must_be_installed_before_it_is_read() -> None:
 
 def test_config_load_installs_the_source_timezone(tmp_path: Path) -> None:
     (tmp_path / "config.toml").write_text(
-        '[paths]\ndata_root = "/a"\ndocuments_root = "/b"\n'
+        '[paths]\ndata_root = "/a"\ndocuments_root = "/b"\nlogs_root = "/c"\n'
         '[source]\ntimezone = "America/Sao_Paulo"\n',
         encoding="utf-8",
     )

@@ -89,7 +89,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"error: {error}", file=sys.stderr)
         return int(ExitCode.INVALID_CONFIG)
 
-    configure_logging()
+    configure_logging(
+        log_path=config.log_path,
+        max_bytes=config.log_max_bytes,
+        backups=config.log_backups,
+    )
     try:
         return int(args.handler(config, args))
     except AmbiguousQueryError as error:
@@ -180,6 +184,7 @@ def _cmd_doctor(config: Config, args: argparse.Namespace) -> ExitCode:
     findings.append((True, f"config: {origin}"))
     findings.append(_root_finding("data root", config.data_root))
     findings.append(_root_finding("documents root", config.documents_root))
+    findings.append(_root_finding("logs root", config.logs_root))
     findings.append((True, f"timezone: {config.timezone_name}"))
 
     try:
@@ -322,9 +327,16 @@ def _cmd_purge(config: Config, args: argparse.Namespace) -> ExitCode:
 
 
 def _cmd_status(config: Config, args: argparse.Namespace) -> ExitCode:
+    """What the archive holds — and, for whatever it still owes, why it owes it.
+
+    A count of documents left in a non-terminal state answers "is anything missing?" and
+    nothing else; the reason is one join away in the manifest, and requiring an operator to
+    open SQLite to read it is what makes a stuck document look like a quiet market.
+    """
     print(f"config: {config.origin if config.origin is not None else 'built-in defaults'}")
     print(f"data root: {config.data_root}")
     print(f"documents root: {config.documents_root}")
+    print(f"log file: {config.log_path}")
     print(f"timezone: {config.timezone_name}")
     window = Clock.installed().window(config.retention_days)
     print(f"window: {window.first} .. {window.last} ({window.days} dates)")
@@ -342,11 +354,49 @@ def _cmd_status(config: Config, args: argparse.Namespace) -> ExitCode:
             f"{count} {state}" for state, count in counts.items() if count
         )
         print(f"documents: {total}" + (f" ({states})" if states else ""))
+        _print_pending(manifest)
         watermark = manifest.state.watermark()
         print(f"last completed sweep: {watermark if watermark is not None else 'never'}")
     finally:
         connection.close()
     return ExitCode.CLEAN
+
+
+#: What the archive still owes: queued or waiting to be retried, interrupted mid-download, or
+#: given up on. Every other state is settled, and settled states have nothing to explain.
+_PENDING_STATES = (LocalState.DISCOVERED, LocalState.DOWNLOADING, LocalState.FAILED)
+
+
+def _print_pending(manifest: Manifest) -> None:
+    """List what is not on disk yet, each with the last failure recorded against it."""
+    pending = manifest.documents.in_state(*_PENDING_STATES)
+    if not pending:
+        return
+    print(f"pending ({len(pending)}):")
+    for record in pending:
+        document = record.document
+        print(
+            f"  ({document.document_id}, {document.version}) {record.local_state} "
+            f"{document.cvm_code} {document.category} delivered {document.delivery_date}"
+        )
+        print(f"    {_last_failure(manifest, record.identity)}")
+
+
+def _last_failure(manifest: Manifest, identity: tuple[int, int]) -> str:
+    """The reason, in the words of the exception that produced it.
+
+    Kept verbatim and untruncated: a message that has been shortened to fit is one an
+    operator has to go and read in full anyway, which is the trip this line exists to save.
+    """
+    failure = manifest.attempts.last_failure(identity)
+    if failure is None:
+        return "not attempted yet"
+    attempts = manifest.attempts.failures(identity)
+    when = failure.at.isoformat(sep=" ", timespec="seconds")
+    return (
+        f"{attempts} failed attempt(s), last {when}: "
+        f"{failure.detail or 'no detail was recorded'}"
+    )
 
 
 # --- Query plumbing shared by add, resolve and rm. ---
