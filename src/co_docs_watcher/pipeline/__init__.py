@@ -11,14 +11,17 @@ what the next discovery downloads again.
 
 from co_docs_watcher.pipeline.discover import DiscoveryOutcome, archive_everything, discover
 from co_docs_watcher.pipeline.fetch import FetchOutcome, fetch_pending
+from co_docs_watcher.pipeline.purge import PurgeOutcome, purge
 from co_docs_watcher.pipeline.reconcile import ReconcileOutcome, reconcile
 
 __all__ = [
     "DiscoveryOutcome",
     "FetchOutcome",
+    "PurgeOutcome",
     "ReconcileOutcome",
     "archive_everything",
     "discover",
     "fetch_pending",
+    "purge",
     "reconcile",
 ]
