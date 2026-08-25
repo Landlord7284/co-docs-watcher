@@ -38,6 +38,7 @@ __all__ = [
     "ManifestError",
     "RegistryError",
     "RegistryNotPublishedError",
+    "RequestBudgetExceededError",
     "SchemaTooNewError",
     "SourceContractError",
     "SourceError",
@@ -124,6 +125,16 @@ class CaptchaRequiredError(SourceError):
 
     exit_code: ClassVar[ExitCode] = ExitCode.CAPTCHA_REQUIRED
     severity: ClassVar[int] = logging.ERROR
+
+
+class RequestBudgetExceededError(SourceError):
+    """The per-run request cap was reached.
+
+    The cap is a safety fuse, not a pacing mechanism: the backend behind the source drops
+    under load and stays down for about an hour, and a runaway loop must burn out before it
+    burns the source. Not retryable within the run — whatever was still pending stays
+    pending, the run ends ``PARTIAL_FAILURE``, and the next run starts with a fresh budget.
+    """
 
 
 class SourceContractError(SourceError):

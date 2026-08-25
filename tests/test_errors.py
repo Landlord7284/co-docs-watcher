@@ -18,6 +18,7 @@ from co_docs_watcher.errors import (
     ManifestError,
     RegistryError,
     RegistryNotPublishedError,
+    RequestBudgetExceededError,
     SchemaTooNewError,
     SourceContractError,
     SourceError,
@@ -42,6 +43,7 @@ ALL_ERRORS = [
     ManifestError,
     RegistryError,
     RegistryNotPublishedError,
+    RequestBudgetExceededError,
     SchemaTooNewError,
 ]
 
@@ -64,6 +66,7 @@ def test_every_error_descends_from_the_base(error_type: type[Exception]) -> None
         (CompanyError, ExitCode.PARTIAL_FAILURE),
         (ManifestError, ExitCode.PARTIAL_FAILURE),
         (RegistryError, ExitCode.PARTIAL_FAILURE),
+        (RequestBudgetExceededError, ExitCode.PARTIAL_FAILURE),
         (WatchListError, ExitCode.INVALID_CONFIG),
         (WatchListConflictError, ExitCode.INVALID_CONFIG),
         (AmbiguousQueryError, ExitCode.PARTIAL_FAILURE),
@@ -129,7 +132,14 @@ def test_a_registry_failure_blocks_registration_and_not_monitoring() -> None:
 
 @pytest.mark.parametrize(
     "error_type",
-    [WatcherError, ConfigError, LockHeldError, TransientSourceError, SourceContractError],
+    [
+        WatcherError,
+        ConfigError,
+        LockHeldError,
+        TransientSourceError,
+        SourceContractError,
+        RequestBudgetExceededError,
+    ],
 )
 def test_non_item_errors_are_batch_fatal(error_type: type[WatcherError]) -> None:
     assert error_type.batch_fatal
