@@ -80,7 +80,9 @@ src/co_docs_watcher/
 ├── errors.py         exception hierarchy
 ├── lock.py           flock
 ├── logging_setup.py  formatTime anchored on the source timezone
+├── models.py         the neutral core: SourceDocument, LocalState, Delivery
 ├── run.py            orchestration of one run
+├── source.py         the Source protocol the pipeline depends on
 ├── text.py
 ├── cvm/              FCA registry: download, cache, search, ticker
 ├── rad/              the source — nothing outside imports from here
@@ -94,7 +96,7 @@ src/co_docs_watcher/
 └── pipeline/         discover, fetch, reconcile, purge, inbox
 ```
 
-**The seam has one rule, worth a CI-failing architecture test: no module outside `rad/` imports `rad/`.** The manifest stores `SourceDocument`, a neutral dataclass — never the source row.
+**The seam has one rule, worth a CI-failing architecture test: no module outside `rad/` imports `rad/`.** The single exception is `run.py`, the composition root: something has to build the adapter and hand it to the pipeline as a `Source`. The architecture test carries that one-item allowlist and nothing else; test modules are exempt, since contract tests exist precisely to import `rad/`. The pipeline depends on the `Source` protocol in `source.py`, never on the adapter, and the manifest stores `SourceDocument`, a neutral dataclass — never the source row.
 
 ### One run
 
