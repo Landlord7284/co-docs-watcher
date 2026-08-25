@@ -10,5 +10,12 @@ what the next discovery downloads again.
 """
 
 from co_docs_watcher.pipeline.discover import DiscoveryOutcome, archive_everything, discover
+from co_docs_watcher.pipeline.fetch import FetchOutcome, fetch_pending
 
-__all__ = ["DiscoveryOutcome", "archive_everything", "discover"]
+__all__ = [
+    "DiscoveryOutcome",
+    "FetchOutcome",
+    "archive_everything",
+    "discover",
+    "fetch_pending",
+]
