@@ -78,6 +78,8 @@ Config discovery chain, in order: `--config` → `$CO_WATCHER_CONFIG` → `./con
 | `source.min_request_interval` | `5.0` | seconds between requests; the backend is fragile |
 | `source.max_requests_per_run` | `200` | safety fuse for a single run |
 
+`[prefix_overrides]` is a section of its own, keyed by CVM code — `"003549" = "SCHLOSSER"` — and settles a folder name the resolver got typographically right and humanly wrong. Its keys are data rather than schema: this is the single place where an unknown key is not a typo. Values are validated, never sanitized, because an override is a deliberate act and repairing one quietly would name a folder after something nobody wrote.
+
 ## Architecture
 
 Python 3.12+. Dependency ceiling: `httpx`, `ruamel.yaml`, `tzdata`, and nothing else beyond the standard library. `ruamel.yaml` because comments must survive YAML rewrites; `tzdata` because a minimal Linux image ships no IANA database — which would be a crash before any error handling runs.
@@ -167,7 +169,7 @@ Folders are named by the ticker root from the FCA registry, with fallbacks. The 
 ^([A-Z][A-Z0-9]{3,})(\d{1,2}[A-Z]?)$
 ```
 
-Group 1 is the root: `PETR4 → PETR`, `POMO3/POMO4 → POMO`, `EQMA3B → EQMA`, `B3SA3 → B3SA`. When a company has more than one root (typically subscription-receipt pairs like `ENGI`/`ENGI1`), **the shorter root wins**; remaining ties break alphabetically and can be overridden in the config file. Measured on the 2026 FCA (2026-08-24): 346 of 675 companies carry at least one valid root, 12 carry more than one, and after the tie-break there are **zero root collisions** between companies; `CNPJ → CD_CVM` is strictly 1:1 in both directions.
+Group 1 is the root: `PETR4 → PETR`, `POMO3/POMO4 → POMO`, `EQMA3B → EQMA`, `B3SA3 → B3SA`. When a company has more than one root (typically subscription-receipt pairs like `ENGI`/`ENGI1`), **the shorter root wins**; remaining ties break alphabetically and can be overridden in `[prefix_overrides]`. Measured on the 2026 FCA (2026-08-24): 346 of 675 companies carry at least one valid root, 12 carry more than one, and after the tie-break there are **zero root collisions** between companies; `CNPJ → CD_CVM` is strictly 1:1 in both directions.
 
 `Codigo_Negociacao` is free text and must be distrusted: dozens of companies fill it with junk (`'NÃO HÁ'`, `'B3'`, bare numbers). The resolver **validates the root against the rule above** and falls back when it fails. Legitimate class-digit-less codes matching `^[A-Z]{4,5}$` (e.g. `LMED`, `TEGA`) already *are* the root and are accepted as such.
 

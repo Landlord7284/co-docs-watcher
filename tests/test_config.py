@@ -125,6 +125,26 @@ max_requests_per_run = 40
     assert config.max_requests_per_run == 40
 
 
+def test_prefix_overrides_are_keyed_by_cvm_code(tmp_path: Path) -> None:
+    write(
+        tmp_path / "config.toml",
+        VALID
+        + """
+[prefix_overrides]
+"003549" = "schlosser"
+3271 = "ENERGISA-MINAS"
+""",
+    )
+    config = load_config(env={}, cwd=tmp_path, home=tmp_path)
+    # Keys are data, not schema: this is the one section where an unknown key is not a typo.
+    assert config.prefix_overrides == {"003549": "SCHLOSSER", "003271": "ENERGISA-MINAS"}
+
+
+def test_the_file_without_overrides_has_none(tmp_path: Path) -> None:
+    write(tmp_path / "config.toml")
+    assert load_config(env={}, cwd=tmp_path, home=tmp_path).prefix_overrides == {}
+
+
 def test_the_roots_derive_the_paths_the_rest_of_the_system_uses(tmp_path: Path) -> None:
     write(tmp_path / "config.toml")
     config = load_config(env={}, cwd=tmp_path, home=tmp_path)
@@ -165,6 +185,9 @@ documents_root = "~/watcher/documents"
         (VALID + "[source]\nmax_requests_per_run = -3\n", "integer >= 1"),
         (VALID + "[retention]\nweeks = 3\n", "unknown key"),
         (VALID + "[registry]\nmax_age_days = 0\n", "integer >= 1"),
+        (VALID + '[prefix_overrides]\nPETR = "PETR"\n', "is not a CVM code"),
+        (VALID + '[prefix_overrides]\n"009512" = "../escape"\n', "letters, digits and hyphens"),
+        (VALID + "[prefix_overrides]\n\"009512\" = 4\n", "letters, digits and hyphens"),
         (VALID + "[archive]\nkeep = true\n", "unknown section"),
         ('paths = "nope"\n', "must be a table"),
     ],
