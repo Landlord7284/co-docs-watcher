@@ -110,7 +110,7 @@ vazio — descartar antes de contar.
 | 6 | Data de entrega | `<spanOrder>20260804</spanOrder> 04/08/2026 15:37` |
 | 7 | Status | `Ativo` / `Inativo` / `Cancelado` |
 | 8 | Versão | `7` |
-| 9 | Modalidade | `AP` / `RE` |
+| 9 | Modalidade | `AP` / `RE` / `RC` |
 | 10 | HTML dos ícones de ação | contém os identificadores de download |
 | 11 | **Assunto** | `Petrobras informa sobre remuneração aos acionistas` |
 
@@ -130,6 +130,11 @@ Campos ausentes de exibição (tipo, espécie) chegam como ` - `.
 Medido no mesmo dia inteiro (479 linhas): **todas** com exatamente 12 campos e
 **todas** — inclusive `Inativo` e `Cancelado` — com `OpenDownloadDocumentos` no
 campo 10. Um cancelamento continua endereçável.
+
+**Modalidade tem três valores, não dois**: além de `AP` (apresentação) e `RE`
+(reapresentação espontânea), a listagem inteira de 24/08/2026 trouxe `RC`
+(reapresentação por exigência) — observado pela suíte live em 25/08/2026, que
+abortou a coleta exatamente como o parser promete diante de valor desconhecido.
 
 ---
 
@@ -188,6 +193,15 @@ GET frmDownloadDocumento.aspx
 | ITR | ZIP | 8.648.457 | `PK…` |
 | FRE | ZIP | 8.406.538 | `PK…` |
 
+**Categoria não determina o tipo — nem para eventuais.** Observado em
+25/08/2026 pela suíte live: FCA retorna ZIP (`Content-Disposition`
+`02339620260101103.zip`), e um **Comunicado ao Mercado** (`numSequencia`
+1085233, companhia 050059) também veio como **ZIP**, contendo um membro
+`050059202608242408202607063625801.ipe` e um
+`InformacoesPeriodicasEventuais.xml` — enquanto o Fato Relevante medido em
+24/08/2026 veio PDF puro. O tipo real é sempre decidido pela assinatura do
+conteúdo; nenhuma tabela categoria→tipo é confiável.
+
 **O `Content-Type` mente.** Veio `text/html` nos três casos. O tipo real sai do
 *magic number* ou do `Content-Disposition`, nunca do header de tipo.
 
@@ -218,6 +232,12 @@ diferentes. Comparando entrada a entrada pelo CRC do diretório central:
 
 Só o PDF difere, e o nome dele carrega o instante da geração. PDF de fato
 relevante, testado do mesmo jeito, é **estável**.
+
+**O PDF de leitura não é garantido em todo pacote**: um FRE v8 (`numSequencia`
+161033, companhia 020060) veio em 25/08/2026 com apenas dois XMLs
+(`020060FRE31-12-2026v8.xml`, `FormularioCadastral.xml`) e nenhum PDF gerado.
+O robô não depende dele — os papéis são marcados pelo nome do membro, e um
+pacote sem cópia gerada é arquivado do mesmo jeito.
 
 Consequência: o hash é gravado **por arquivo**, com marcador de estabilidade, e
 serve integridade e auditoria — nunca deduplicação.

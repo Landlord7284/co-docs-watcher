@@ -46,8 +46,10 @@ _STATUSES = {
     "Cancelado": SourceStatus.CANCELLED,
 }
 
-#: AP is a first presentation, RE a resubmission. Anything else is divergence.
-_MODALITIES = frozenset({"AP", "RE"})
+#: AP is a first presentation, RE a spontaneous resubmission, RC a resubmission demanded by
+#: the regulator (observed live 2026-08-25, in the 2026-08-24 market listing). Anything else
+#: is divergence.
+_MODALITIES = frozenset({"AP", "RE", "RC"})
 
 _SPAN_ORDER = re.compile(r"^\s*<spanOrder>(?P<key>.*?)</spanOrder>", re.DOTALL)
 
