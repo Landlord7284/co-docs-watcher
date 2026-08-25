@@ -162,7 +162,7 @@ Three rules that look like detail and are not:
 - **A category subfolder carries identity in the PDF name, not the directory.** Two deliveries of the same category on the same day must not collide; if they would, the subfolder gains a `_V{version}` suffix.
 - **`.tmp/` lives under `documents_root`**, so `rename` stays atomic within a single filesystem.
 
-The inbox index includes the subject (listing field 11). A cancelled document does not become a file, but is mentioned in the inbox of the day it was observed.
+The inbox index includes the subject (listing field 11). A cancelled document does not become a file, but is mentioned in the inbox of the day it was observed, and so is one the watcher could not fetch — silence about a document reads exactly like nothing having been published.
 
 ## Company identity
 
