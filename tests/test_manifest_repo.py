@@ -33,6 +33,26 @@ def manifest(tmp_path: Path) -> Iterator[Manifest]:
     connection.close()
 
 
+def test_the_queue_drains_the_most_recent_day_first(manifest: Manifest) -> None:
+    """A run cut short by the budget, the source, or a captcha spends it on recent days."""
+    for offset, document_id in ((6, 100), (0, 200), (3, 300), (0, 201)):
+        manifest.documents.upsert_observed(
+            make_document(document_id=document_id, delivery_date=date(2026, 8, 24 - offset))
+        )
+
+    queued = manifest.documents.in_state(LocalState.DISCOVERED)
+
+    assert [record.document.delivery_date for record in queued] == [
+        date(2026, 8, 24),
+        date(2026, 8, 24),
+        date(2026, 8, 21),
+        date(2026, 8, 18),
+    ]
+    # Within one day, publication order is kept: both arrive in the same run seconds apart,
+    # and reordering them would only change which takes the unsuffixed category folder.
+    assert [record.document.document_id for record in queued[:2]] == [200, 201]
+
+
 def test_a_first_sighting_is_discovered_and_keeps_the_protocol(manifest: Manifest) -> None:
     document = make_document()
     record = manifest.documents.upsert_observed(document)

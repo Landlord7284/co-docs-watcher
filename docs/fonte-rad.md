@@ -209,6 +209,45 @@ O `Content-Disposition` **não serve para nomear**: o do fato relevante veio
 `009512000101011.pdf` — código CVM + data de referência nula + versão. Sem id,
 sem data legível. O nome no disco tem que ser construído pelo robô.
 
+### O pacote IPE (medido 25/08/2026)
+
+O ZIP de uma entrega eventual **não é um pacote estruturado**. Medido sobre
+quinze documentos da FLEURY (código 021881, entregas de 19 a 24/08/2026), das
+categorias Comunicado ao Mercado, Aviso aos Debenturistas, Valores Mobiliários
+Negociados e Detidos e Documentos de Oferta de Distribuição Pública, todos com
+exatamente dois membros:
+
+```
+InformacoesPeriodicasEventuais.xml            ~8-9 KB   envelope de metadados
+021881202608242408202618072825601.ipe        176.317   %PDF-1.7  ← o documento
+```
+
+**A extensão `.ipe` é invenção do ENET, não formato.** Nos quinze casos o membro
+`.ipe` é PDF por assinatura (`%PDF-1.4` a `%PDF-1.7`). O nome é código CVM, data
+de referência, data de entrega, instante e protocolo emendados — não nomeia nada
+que um humano leia, e o robô impõe o seu.
+
+O envelope declara o anexo, inclusive a extensão pretendida:
+
+```xml
+<DescricaoCategoria>Comunicado ao Mercado</DescricaoCategoria>
+<DescricaoTipo>Aquisição/Alienação de Participação Acionária Relevante</DescricaoTipo>
+<NomeArquivoAnexo>21881_1560774.08.24 - Comunicado ao Mercado - ... - JP Morgan.pdf</NomeArquivoAnexo>
+<ExtensaoArquivo>.pdf</ExtensaoArquivo>
+<NumeroProtocoloArquivo>1560774</NumeroProtocoloArquivo>
+<TamanhoArquivo>172</TamanhoArquivo>
+```
+
+`ExtensaoArquivo` é **dica secundária**, atrás da assinatura: nada garante que
+seja sempre `.pdf`, e o campo é dado da fonte, validado antes de poder nomear um
+arquivo. Todo o resto do envelope — categoria, tipo, espécie, assunto, protocolo
+— já veio na listagem, então o robô lê a extensão declarada e descarta o
+envelope; o anexo é a entrega.
+
+**Não há amostra de pacote IPE com mais de um anexo.** A forma não foi medida, e
+descartar o envelope é o único movimento irreversível aqui: um envelope com
+número de anexos diferente de um é arquivado inteiro, com aviso.
+
 ### Conteúdo do ZIP (ITR da Petrobras, medido)
 
 ```
@@ -352,8 +391,20 @@ de uma hora, e derrubou junto a busca de empresas.
 
 Não dá para separar queda espontânea da CVM de circuit breaker acionado pelo
 levantamento. Tratar como ambos: backoff exponencial, teto de requisições por
-execução, intervalo mínimo de **5 s** (o `1.5 s` do `fii-docs-watcher` é agressivo
+execução, intervalo mínimo de **15 s** (o `1.5 s` do `fii-docs-watcher` é agressivo
 demais aqui), e `temErro` como retry, nunca como resultado vazio.
+
+Doze chamadas em poucos minutos são, se "poucos" forem três, uma a cada ~15 s. O
+piso de 15 s fica portanto **no espaçamento estimado da única falha observada, não
+além dele** — é escolha deliberada, não margem de segurança. O limiar real é
+desconhecido e só se aprende provocando-o, e cada provocação custa uma hora de
+fonte.
+
+O que torna esse piso aceitável é a **ordem**: a varredura e a fila vão do dia mais
+recente para o mais antigo, de modo que um run interrompido pela fonte já gastou o
+que tinha nos dias que alguém vai abrir. O preço em tempo são minutos, porque o run
+não é dominado por downloads — são 7 varreduras por execução (uma por dia da janela)
+mais uma requisição por documento novo.
 
 ### Filtro de categoria errado devolve vazio, não erro — alto
 

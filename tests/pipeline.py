@@ -38,6 +38,23 @@ def pdf_delivery(document: SourceDocument, into: Path, *, content: bytes = PDF_B
     )
 
 
+def unwrapped_ipe_delivery(document: SourceDocument, into: Path) -> Delivery:
+    """What the adapter hands back for an eventual filing that arrived in an IPE container.
+
+    The response was a ZIP, and the delivery is one filing: the envelope was read and
+    discarded at the boundary. This is the shape that proves the pipeline files by the shape
+    of the delivery rather than by the shape of the response.
+    """
+    into.mkdir(parents=True, exist_ok=True)
+    path = into / "document.pdf"
+    path.write_bytes(PDF_BYTES)
+    return Delivery(
+        document=document,
+        kind=DeliveryKind.ZIP,
+        files=(DeliveredFile(path=path, role=FileRole.DOCUMENT, stable=True),),
+    )
+
+
 def zip_delivery(
     document: SourceDocument,
     into: Path,

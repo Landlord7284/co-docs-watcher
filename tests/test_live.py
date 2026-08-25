@@ -37,7 +37,7 @@ pytestmark = pytest.mark.live
 TIMEZONE = ZoneInfo("America/Sao_Paulo")
 
 #: Seconds between any two requests this suite issues, transport-level pacing included.
-MIN_INTERVAL = 5.0
+MIN_INTERVAL = 15.0
 
 #: The hard budget for one run of the whole suite: 1 listing + 3 downloads, with no slack
 #: for retries — a failed request is a finding, not something to insist on.

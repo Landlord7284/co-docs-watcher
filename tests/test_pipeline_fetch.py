@@ -23,7 +23,13 @@ from co_docs_watcher.pipeline.fetch import (
     fetch_pending,
 )
 from tests.conftest import TODAY, Roots
-from tests.pipeline import PDF_BYTES, FakeSource, pdf_delivery, zip_delivery
+from tests.pipeline import (
+    PDF_BYTES,
+    FakeSource,
+    pdf_delivery,
+    unwrapped_ipe_delivery,
+    zip_delivery,
+)
 from tests.test_models import make_document
 from tests.test_pipeline_discover import PETR
 
@@ -76,6 +82,25 @@ def test_the_pdf_is_hashed_once_and_marked_stable(manifest: Manifest, roots: Roo
     assert files[0].sha256 == hashlib.sha256(PDF_BYTES).hexdigest()
     assert files[0].size_bytes == len(PDF_BYTES)
     assert files[0].stable is True
+
+
+def test_an_unwrapped_ipe_delivery_lands_flat_like_any_other_filing(
+    manifest: Manifest, roots: Roots
+) -> None:
+    """The response was a container; the delivery is one filing, and the layout follows it."""
+    document = make_document()
+    queue(manifest, document)
+    source = FakeSource(recipes={document.identity: unwrapped_ipe_delivery})
+
+    run(manifest, roots, source)
+
+    placed = Path(DAY) / "PETR" / "Fato-Relevante_160310_V01.pdf"
+    assert (roots.documents_root / placed).read_bytes() == PDF_BYTES
+    assert manifest.documents.require(document.identity).archive_path == placed
+    # No category subfolder, and nothing left under the opaque name the source used.
+    assert sorted(path.name for path in (roots.day(TODAY) / "PETR").iterdir()) == [
+        "Fato-Relevante_160310_V01.pdf"
+    ]
 
 
 def test_a_container_is_extracted_in_full_into_a_category_subfolder(

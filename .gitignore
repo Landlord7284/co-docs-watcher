@@ -7,3 +7,7 @@ __pycache__/
 build/
 dist/
 var/
+
+# The local configuration; config.example.toml is the one that is tracked.
+/config.toml
+/co-docs-watcher.toml

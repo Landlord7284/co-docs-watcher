@@ -16,6 +16,12 @@ where a human reading a directory listing can see it.
 Only the container is named after the category, and only for structured deliveries — which is
 why two deliveries of the same category, by the same company, on the same day, do not collide:
 the directory takes a suffix, and the identity stays in the PDF inside it.
+
+What decides between the two layouts is the shape of the *delivery*, never the shape of the
+response. An eventual filing reaches this module as one ``DOCUMENT`` whether it arrived as a
+bare PDF or wrapped in an IPE container the adapter unwrapped, and both land as one named PDF
+in the company's folder — which is what a reading queue is for: the day's directory listing
+should read as the day's publications, not as a row of folders to open one by one.
 """
 
 from __future__ import annotations
@@ -41,7 +47,6 @@ from co_docs_watcher.manifest.repo import AttemptOutcome, FileRecord, Identity, 
 from co_docs_watcher.models import (
     DeliveredFile,
     Delivery,
-    DeliveryKind,
     FileRole,
     LocalState,
     SourceDocument,
@@ -225,7 +230,7 @@ def _place(
     document = delivery.document
     company_root = documents_root / directory_name(document.delivery_date) / prefix
     company_root.mkdir(parents=True, exist_ok=True)
-    if delivery.kind is DeliveryKind.PDF:
+    if _is_standalone(delivery):
         placed = _place_document(delivery, company_root=company_root)
     else:
         placed = _place_container(delivery, staging=staging, company_root=company_root)
@@ -240,13 +245,17 @@ def _place(
     ]
 
 
+def _is_standalone(delivery: Delivery) -> bool:
+    """One file, and that file is the filing itself — however it reached the staging tree.
+
+    ``archive_path_of`` reads the same discriminator back off the manifest, which is what
+    keeps placement and startup reconciliation from disagreeing about where a delivery lives.
+    """
+    return len(delivery.files) == 1 and delivery.files[0].role is FileRole.DOCUMENT
+
+
 def _place_document(delivery: Delivery, *, company_root: Path) -> list[tuple[DeliveredFile, Path]]:
-    """A standalone PDF: one file, one ``rename``, the imposed name."""
-    if len(delivery.files) != 1:
-        raise DocumentError(
-            f"document {delivery.document.identity}: a standalone delivery carries one file, "
-            f"got {len(delivery.files)}"
-        )
+    """A standalone filing: one file, one ``rename``, the imposed name."""
     delivered = delivery.files[0]
     target = company_root / document_file_name(delivery.document, delivered.path.suffix or ".pdf")
     os.replace(delivered.path, target)

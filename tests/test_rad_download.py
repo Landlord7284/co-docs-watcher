@@ -29,6 +29,22 @@ STABLE_XML = "009512ITR30-06-2026v1.xml"
 GENERATED_PDF = "160282_009512_24082026155035.pdf"
 SPREADSHEET = "DadosDocumento.xlsx"
 
+#: The measured shape of an eventual filing: the envelope, plus the filing itself under a
+#: name that is CVM code, dates and protocol run together, with an extension the ENET
+#: invented. Measured on FLEURY's 2026-08-24 Comunicado ao Mercado.
+IPE_ENVELOPE = "InformacoesPeriodicasEventuais.xml"
+IPE_ATTACHMENT = "021881202608242408202618072825601.ipe"
+
+
+def envelope(extension: str = ".pdf") -> bytes:
+    """The envelope, reduced to the one element the adapter reads out of it."""
+    return (
+        "<?xml version='1.0'?><Documento>"
+        "<DescricaoCategoria>Comunicado ao Mercado</DescricaoCategoria>"
+        f"<ExtensaoArquivo>{extension}</ExtensaoArquivo>"
+        "</Documento>"
+    ).encode()
+
 
 class FakeClient:
     def __init__(self, content: bytes, content_disposition: str = "") -> None:
@@ -143,6 +159,75 @@ def test_a_structured_zip_is_extracted_with_roles_and_stability(tmp_path: Path) 
     assert not by_name[GENERATED_PDF].stable
     assert by_name[SPREADSHEET].stable
     assert (staged(tmp_path) / GENERATED_PDF).read_bytes() == PDF
+
+
+def test_an_ipe_package_is_unwrapped_into_the_filing_it_wraps(tmp_path: Path) -> None:
+    """The ``.ipe`` extension is a wire artifact; the bytes are a PDF and the signature wins."""
+    client = FakeClient(build_zip((IPE_ENVELOPE, envelope()), (IPE_ATTACHMENT, PDF)))
+
+    delivery = fetch(client, document(), staged(tmp_path))  # type: ignore[arg-type]
+
+    (file,) = delivery.files
+    assert file.role is FileRole.DOCUMENT
+    assert file.stable
+    # The neutral staging name a bare PDF gets: the archive name is the pipeline's to impose.
+    assert file.path == staged(tmp_path) / "document.pdf"
+    assert file.path.read_bytes() == PDF
+    # The envelope carries nothing the listing did not already give us, and is not archived.
+    assert not (staged(tmp_path) / IPE_ENVELOPE).exists()
+    assert not (staged(tmp_path) / IPE_ATTACHMENT).exists()
+
+
+def test_an_unrecognized_attachment_falls_back_to_the_declared_extension(tmp_path: Path) -> None:
+    client = FakeClient(
+        build_zip((IPE_ENVELOPE, envelope(".doc")), (IPE_ATTACHMENT, b"\xd0\xcf ol"))
+    )
+
+    delivery = fetch(client, document(), staged(tmp_path))  # type: ignore[arg-type]
+
+    (file,) = delivery.files
+    assert file.path == staged(tmp_path) / "document.doc"
+    assert file.role is FileRole.DOCUMENT
+
+
+@pytest.mark.parametrize("declared", ["", "pdf", "../evil", ".p df", ".toolongextension"])
+def test_an_implausible_declared_extension_leaves_the_container_whole(
+    tmp_path: Path, declared: str
+) -> None:
+    """An envelope is data. A name it fails to justify never reaches the filesystem."""
+    client = FakeClient(
+        build_zip((IPE_ENVELOPE, envelope(declared)), (IPE_ATTACHMENT, b"\xd0\xcf"))
+    )
+
+    delivery = fetch(client, document(), staged(tmp_path))  # type: ignore[arg-type]
+
+    assert {file.path.name for file in delivery.files} == {IPE_ENVELOPE, IPE_ATTACHMENT}
+    assert all(file.role is FileRole.MEMBER for file in delivery.files)
+
+
+def test_an_envelope_with_several_attachments_is_archived_whole(tmp_path: Path) -> None:
+    """An unmeasured shape is kept, not guessed at: discarding the envelope is irreversible."""
+    client = FakeClient(
+        build_zip(
+            (IPE_ENVELOPE, envelope()),
+            (IPE_ATTACHMENT, PDF),
+            ("021881202608242408202618072825602.ipe", PDF),
+        )
+    )
+
+    delivery = fetch(client, document(), staged(tmp_path))  # type: ignore[arg-type]
+
+    assert len(delivery.files) == 3
+    assert (staged(tmp_path) / IPE_ENVELOPE).exists()
+
+
+def test_a_structured_package_is_not_mistaken_for_an_ipe_one(tmp_path: Path) -> None:
+    """No envelope, no unwrapping: the ITR keeps every member it arrived with."""
+    client = FakeClient(build_zip((STABLE_XML, b"<itr><conta/></itr>"), (GENERATED_PDF, PDF)))
+
+    delivery = fetch(client, document(), staged(tmp_path))  # type: ignore[arg-type]
+
+    assert {file.path.name for file in delivery.files} == {STABLE_XML, GENERATED_PDF}
 
 
 def test_a_member_in_a_subdirectory_stays_inside_the_staging_directory(tmp_path: Path) -> None:

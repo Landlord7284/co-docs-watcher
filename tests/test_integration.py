@@ -143,9 +143,11 @@ def test_first_run_on_an_empty_archive(site: Site) -> None:
     index = site.inbox(TODAY).read_text(encoding="utf-8")
     assert "Fato de hoje" in index
     assert "Fato-Relevante_101_V01.pdf" in index
-    # The whole window was swept, one request per day, oldest first.
+    # The whole window was swept, one request per day, most recent day first — so a run cut
+    # short has spent what it had on the days a reader opens first.
     assert len(site.server.listing_requests) == 7
-    assert site.server.listing_requests == sorted(site.server.listing_requests)
+    assert site.server.listing_requests == sorted(site.server.listing_requests, reverse=True)
+    assert site.server.listing_requests[0] == TODAY
 
 
 def test_a_second_run_with_nothing_new_is_fully_idempotent(site: Site) -> None:
@@ -300,7 +302,7 @@ def test_doctor_on_a_valid_and_an_invalid_config(site: Site, tmp_path: Path) -> 
     assert "source: answered" in healthy.stdout
 
     broken = tmp_path / "broken.toml"
-    broken.write_text('[paths]\ndata_root = "relative/path"\n', encoding="utf-8")
+    broken.write_text('[paths]\ndata_root = "var/data"\n', encoding="utf-8")
     sick = subprocess.run(
         [sys.executable, "-m", "co_docs_watcher", "--config", str(broken), "doctor"],
         capture_output=True,
@@ -308,7 +310,7 @@ def test_doctor_on_a_valid_and_an_invalid_config(site: Site, tmp_path: Path) -> 
         timeout=120,
     )
     assert sick.returncode == 2
-    assert "absolute" in sick.stderr
+    assert "documents_root is required" in sick.stderr
 
 
 def test_add_list_rm_round_trip_as_a_subprocess(site: Site) -> None:

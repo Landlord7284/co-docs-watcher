@@ -53,8 +53,12 @@ BASE_URL = "https://www.rad.cvm.gov.br/ENETWeb/"
 _SEARCH_PATH = "frmConsultaExternaCVM.aspx/ListarDocumentos"
 _DOWNLOAD_PATH = "frmDownloadDocumento.aspx"
 
-#: Seconds between any two requests, search and download alike. The floor, not a target.
-DEFAULT_MIN_REQUEST_INTERVAL = 5.0
+#: Seconds between any two requests, search and download alike. The floor, not a target,
+#: and the fallback only: the configuration file is where this is meant to be set. The
+#: backend was measured falling over after about a dozen calls in a few minutes and staying
+#: down for an hour, so the floor sits well outside that spacing — the threshold is unknown
+#: and can only be found by provoking it, which costs an hour of the source each time.
+DEFAULT_MIN_REQUEST_INTERVAL = 15.0
 
 #: The safety fuse: one run never issues more requests than this.
 DEFAULT_MAX_REQUESTS_PER_RUN = 200

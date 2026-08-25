@@ -112,7 +112,7 @@ def test_the_sweep_covers_the_whole_window_never_an_increment(config: Config) ->
     source = FakeSource([])
     run(config, source)
     run(config, source)
-    expected = [TODAY - timedelta(days=offset) for offset in range(6, -1, -1)]
+    expected = [TODAY - timedelta(days=offset) for offset in range(7)]
     assert source.requested == [expected, expected]
 
 

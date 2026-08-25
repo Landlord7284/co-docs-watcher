@@ -156,6 +156,43 @@ def test_the_roots_derive_the_paths_the_rest_of_the_system_uses(tmp_path: Path) 
     assert config.inbox_root == Path("/srv/co-docs-watcher/documents/_inbox")
 
 
+def test_a_relative_root_is_anchored_on_the_configuration_file(tmp_path: Path) -> None:
+    """The project-local posture: a checkout that archives beside its own config file."""
+    project = tmp_path / "project"
+    project.mkdir()
+    write(
+        project / "config.toml",
+        """
+[paths]
+data_root = "var/data"
+documents_root = "var/documents"
+""",
+    )
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    config = load_config(project / "config.toml", env={}, cwd=elsewhere, home=elsewhere)
+    assert config.data_root == project.resolve() / "var" / "data"
+    assert config.documents_root == project.resolve() / "var" / "documents"
+
+
+def test_a_relative_config_path_still_anchors_absolutely(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--config config.toml`` is the common spelling; the roots come out absolute anyway."""
+    write(
+        tmp_path / "config.toml",
+        """
+[paths]
+data_root = "var/data"
+documents_root = "var/documents"
+""",
+    )
+    monkeypatch.chdir(tmp_path)
+    config = load_config(Path("config.toml"), env={}, cwd=tmp_path, home=tmp_path)
+    assert config.data_root.is_absolute()
+    assert config.data_root == tmp_path.resolve() / "var" / "data"
+
+
 def test_a_home_relative_root_is_expanded_and_accepted(tmp_path: Path) -> None:
     write(
         tmp_path / "config.toml",
@@ -176,7 +213,6 @@ documents_root = "~/watcher/documents"
         ("[paths\n", "invalid TOML"),
         ('[paths]\ndata_root = "/a"\n', "documents_root is required"),
         ('[paths]\ndocuments_root = "/a"\n', "data_root is required"),
-        ('[paths]\ndata_root = "var/data"\ndocuments_root = "/a"\n', "absolute path"),
         ('[paths]\ndata_root = ""\ndocuments_root = "/a"\n', "non-empty string"),
         (VALID + '[source]\ntimezone = "Mars/Olympus"\n', "unknown timezone"),
         (VALID + "[retention]\ndays = 0\n", "integer >= 1"),

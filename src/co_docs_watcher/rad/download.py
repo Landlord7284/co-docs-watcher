@@ -17,11 +17,22 @@ name, so it differs between two downloads of the same document: it is marked
 ``GENERATED_PDF`` and unstable, which is what tells the pipeline to impose its own name and
 tells the manifest that its hash will not repeat. Everything else keeps its origin name and
 is marked stable.
+
+One container is not a structured package at all. An eventual filing delivered through the
+IPE module arrives as a ZIP holding exactly two members: an envelope,
+``InformacoesPeriodicasEventuais.xml``, carrying metadata the listing already gave us, and
+the filing itself under a ``.ipe`` name that is a wire artifact rather than a format — the
+bytes are a PDF. That package is unwrapped here: the envelope is validated, read for the
+extension it declares, and discarded, and the attachment leaves as the single ``DOCUMENT``
+of the delivery, so the pipeline files it exactly like the Fato Relevante that arrives as a
+bare PDF. Sniffing a member is the same rule as sniffing the response, applied one layer
+in: it is inside the container that this source hides a PDF behind an invented name.
 """
 
 from __future__ import annotations
 
 import io
+import logging
 import re
 import shutil
 import zipfile
@@ -40,6 +51,8 @@ from co_docs_watcher.rad.client import RadClient
 
 __all__ = ["MAX_EXTRACTED_BYTES", "fetch"]
 
+logger = logging.getLogger(__name__)
+
 _MAGIC_PDF = b"%PDF-"
 _MAGIC_ZIP = b"PK\x03\x04"
 
@@ -54,6 +67,22 @@ MAX_EXTRACTED_BYTES = 1024 * 1024 * 1024
 
 #: The on-demand reading copy: ``{numSequencia}_{cvm code}_{generation instant}.pdf``.
 _GENERATED_PDF_NAME = re.compile(r"^\d+_\d+_\d+\.pdf$", re.IGNORECASE)
+
+#: The envelope member that marks a container as an IPE delivery rather than a structured
+#: package. A wire name, quoted literally: it is the source's, not ours.
+_IPE_ENVELOPE_NAME = "informacoesperiodicaseventuais.xml"
+
+#: The envelope element naming the attachment's real extension — the secondary hint, used
+#: only when the signature matches nothing this build recognizes.
+_IPE_DECLARED_EXTENSION_ELEMENT = "ExtensaoArquivo"
+
+#: What a declared extension is allowed to look like before it may name a file on disk. An
+#: envelope is data, so it is validated rather than trusted.
+_PLAUSIBLE_EXTENSION = re.compile(r"^\.[0-9A-Za-z]{1,8}$")
+
+#: Signature to extension, for a member. Only what this build can vouch for: anything else
+#: falls through to the declared hint and, failing that, keeps its origin name.
+_MEMBER_EXTENSIONS = ((_MAGIC_PDF, ".pdf"), (_MAGIC_ZIP, ".zip"))
 
 _DRIVE_LETTER = re.compile(r"^[A-Za-z]:")
 
@@ -127,6 +156,10 @@ def _deliver_zip(
             if info.filename.lower().endswith(".xml"):
                 _require_plausible_xml(archive, info, label)
 
+        unwrapped = _unwrap_ipe_package(document, archive, members, into, label)
+        if unwrapped is not None:
+            return unwrapped
+
         files = []
         for info in members:
             target = into / PurePosixPath(info.filename)
@@ -142,6 +175,90 @@ def _deliver_zip(
                 )
             )
     return Delivery(document=document, kind=DeliveryKind.ZIP, files=tuple(files))
+
+
+def _unwrap_ipe_package(
+    document: SourceDocument,
+    archive: zipfile.ZipFile,
+    members: list[zipfile.ZipInfo],
+    into: Path,
+    label: str,
+) -> Delivery | None:
+    """Reduce an IPE container to the single filing it wraps, or leave it alone.
+
+    The shape this recognizes is the measured one: the envelope plus exactly one
+    attachment. A container without the envelope is a structured package and is not this
+    function's business; one carrying the envelope and several attachments is a shape
+    nobody has measured, so it is extracted whole rather than guessed at — losing the
+    envelope would be the one irreversible move here, and it is not made on a hunch.
+
+    Returning ``None`` means "not mine": the caller extracts the container as it stands.
+    """
+    envelope: zipfile.ZipInfo | None = None
+    attachments: list[zipfile.ZipInfo] = []
+    for info in members:
+        if PurePosixPath(info.filename).name.lower() == _IPE_ENVELOPE_NAME:
+            envelope = info
+        else:
+            attachments.append(info)
+    if envelope is None:
+        return None
+    if len(attachments) != 1:
+        logger.warning(
+            "%s: an IPE envelope with %d attachment(s) is a shape this build has not "
+            "measured; the container is being archived whole",
+            label,
+            len(attachments),
+        )
+        return None
+
+    attachment = attachments[0]
+    content = archive.read(attachment)
+    extension = _member_extension(content, _declared_extension(archive, envelope))
+    if extension is None:
+        logger.warning(
+            "%s: the IPE attachment %r matches no signature this build knows and the "
+            "envelope declares no usable extension; the container is being archived whole",
+            label,
+            attachment.filename,
+        )
+        return None
+
+    # A neutral staging name, as for a bare PDF: the archive name is the pipeline's to
+    # impose, and the origin name — CVM code, dates and protocol run together — names
+    # nothing a human reads.
+    path = into / f"document{extension}"
+    path.write_bytes(content)
+    file = DeliveredFile(path=path, role=FileRole.DOCUMENT, stable=True)
+    return Delivery(document=document, kind=DeliveryKind.ZIP, files=(file,))
+
+
+def _member_extension(content: bytes, declared: str | None) -> str | None:
+    """The member's real extension: signature first, the envelope's word only after."""
+    for magic, extension in _MEMBER_EXTENSIONS:
+        if content.startswith(magic):
+            return extension
+    return declared
+
+
+def _declared_extension(archive: zipfile.ZipFile, envelope: zipfile.ZipInfo) -> str | None:
+    """``ExtensaoArquivo`` from the envelope, if it is something a file may be named with.
+
+    The envelope has already been validated as XML by the time this runs, so a parse error
+    here would be a race with nothing; it is still caught, because a hint that cannot be
+    read is a missing hint and never a failed delivery.
+    """
+    try:
+        with archive.open(envelope) as stream:
+            for _, element in ElementTree.iterparse(stream, events=("end",)):
+                tag = element.tag if isinstance(element.tag, str) else ""
+                if tag.rpartition("}")[2] == _IPE_DECLARED_EXTENSION_ELEMENT:
+                    declared = (element.text or "").strip().lower()
+                    return declared if _PLAUSIBLE_EXTENSION.match(declared) else None
+                element.clear()
+    except (ElementTree.ParseError, OSError):
+        return None
+    return None
 
 
 def _validate_member_name(name: str, label: str) -> None:

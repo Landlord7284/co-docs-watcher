@@ -29,10 +29,10 @@ logger = logging.getLogger(__name__)
 def sweep(client: RadClient, days: Sequence[date]) -> list[SourceDocument]:
     """Every publication delivered on the given days, whole market, every status.
 
-    Exactly one request per day, in the order given — the window hands its dates oldest
-    first, so an interrupted run has seen the days a purge would touch first. A failure is
-    not caught here: a missing day is not an isolated item, and whether the run survives it
-    is the caller's decision.
+    Exactly one request per day, in the order given — the window hands its dates most
+    recent first, so a run that dies partway through has seen the days a reader is waiting
+    on rather than the days purge is about to reach. A failure is not caught here: a missing
+    day is not an isolated item, and whether the run survives it is the caller's decision.
     """
     documents: list[SourceDocument] = []
     for day in days:

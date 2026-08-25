@@ -77,7 +77,7 @@ class WatcherError(Exception):
 class ConfigError(WatcherError):
     """Configuration is absent, unreadable, or invalid.
 
-    Raised for malformed TOML, roots that are not absolute, and invalid timezone names. The
+    Raised for malformed TOML, missing or unknown keys, and invalid timezone names. The
     watcher refuses to start rather than falling back to something the operator did not ask
     for: a silent fallback means operating on a different archive than intended.
     """

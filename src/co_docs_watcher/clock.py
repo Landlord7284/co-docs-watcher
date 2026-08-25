@@ -68,8 +68,18 @@ class RetentionWindow:
 
     @property
     def dates(self) -> list[date]:
-        """Every date in the window, oldest first — one listing request each."""
+        """Every date in the window, oldest first — the window's contents, as a list."""
         return [self.first + timedelta(days=offset) for offset in range(self.days)]
+
+    @property
+    def dates_newest_first(self) -> list[date]:
+        """The same dates, most recent first — the order the sweep asks for them in.
+
+        Order is a policy of the sweep and not a property of the window, which is why it is
+        a second name rather than a reversal of the first: the inbox and the retention
+        frontier read ``dates`` as a set of days, and would be indifferent to it.
+        """
+        return [self.last - timedelta(days=offset) for offset in range(self.days)]
 
     def contains(self, day: date) -> bool:
         return self.first <= day <= self.last

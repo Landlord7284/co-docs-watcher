@@ -70,8 +70,10 @@ def test_the_sweep_asks_for_every_day_of_the_window_once(
     source = FakeSource([make_document()])
     discover(source, manifest, window=window, watched=(PETR,))
 
-    assert source.requested == [window.dates]
+    assert source.requested == [window.dates_newest_first]
     assert len(window.dates) == 7
+    # Every day of the window, exactly once — the order is the sweep's, the set is the window's.
+    assert sorted(source.requested[0]) == window.dates
 
 
 def test_rows_of_unwatched_companies_are_counted_and_dropped(

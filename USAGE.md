@@ -27,13 +27,23 @@ The configuration file is discovered in this order — first hit wins:
    current directory)
 
 A path named by `--config` or `$CO_WATCHER_CONFIG` that does not exist refuses to start.
-Unknown sections and unknown keys are rejected. `data_root` and `documents_root` must be
-absolute paths.
+Unknown sections and unknown keys are rejected.
+
+`data_root` and `documents_root` may be absolute, or relative to the **directory of the
+configuration file** — not to the directory you happen to run from. So a project-local
+install is a checkout with a `config.toml` beside it, archiving into its own `var/`,
+and it points at the same archive whether you run it by hand or from cron.
+
+`config.example.toml` at the repository root is a commented copy of the file below:
+
+```bash
+cp config.example.toml config.toml
+```
 
 ```toml
 [paths]
-data_root = "/home/user/watcher/data"           # private: watch list, manifest, lock, cache
-documents_root = "/home/user/watcher/documents" # the shareable archive
+data_root = "var/data"           # private: watch list, manifest, lock, cache
+documents_root = "var/documents" # the shareable archive
 
 [retention]
 days = 7                       # retained dates, including today
@@ -43,7 +53,7 @@ max_age_days = 7               # days a cached FCA package is used without re-do
 
 [source]
 timezone = "America/Sao_Paulo" # anchors dates, directory names, log timestamps
-min_request_interval = 5.0     # seconds between requests; the backend is fragile
+min_request_interval = 15.0    # seconds between requests; the backend is fragile
 max_requests_per_run = 200     # safety fuse for a single run
 base_url = "https://www.rad.cvm.gov.br/ENETWeb/"  # override only for a test server or mirror
 

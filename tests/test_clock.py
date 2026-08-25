@@ -57,6 +57,16 @@ def test_window_arithmetic_across_boundaries(last: date, days: int, first: date)
     assert window.dates[-1] == last
 
 
+def test_the_sweep_order_is_most_recent_first() -> None:
+    """What a manual run feels: today's publications are asked for before last week's."""
+    window = window_ending(date(2026, 8, 24), 7)
+
+    assert window.dates_newest_first[0] == date(2026, 8, 24)
+    assert window.dates_newest_first[-1] == window.first
+    # The same days, in the other order: an order is a policy, not a different window.
+    assert sorted(window.dates_newest_first) == window.dates
+
+
 def test_a_window_must_retain_something() -> None:
     with pytest.raises(ValueError, match="at least one date"):
         window_ending(date(2026, 8, 24), 0)

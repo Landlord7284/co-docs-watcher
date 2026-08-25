@@ -1,0 +1,61 @@
+# co-docs-watcher — example configuration.
+#
+# Copy to one of the discovered locations and edit:
+#
+#   cp config.example.toml config.toml
+#
+# Discovery order, first hit wins: --config PATH, $CO_WATCHER_CONFIG, ./config.toml,
+# ./co-docs-watcher.toml, ~/.config/co-docs-watcher/config.toml, built-in defaults.
+# Falling through to the built-in defaults logs a warning: they point at ./var/… relative
+# to the current directory, and an archive that is not the intended one looks empty in
+# exactly the same way a quiet market does.
+#
+# Every key below is shown with its default. Unknown sections and unknown keys are
+# rejected rather than ignored — a typo that silently keeps a default is a configuration
+# that lies. The only exception is [prefix_overrides], whose keys are data.
+
+[paths]
+# Both roots are REQUIRED. A relative root is resolved against the directory holding THIS
+# file, never against the directory the command was typed in — so a project-local install is
+# just a checkout with a config.toml beside it, and it archives in the same place whether you
+# run it by hand or from cron. Absolute paths are equally valid, and are what a system-wide
+# installation uses.
+#
+# data_root is private — watch list, SQLite manifest, lock, FCA registry cache — and must
+# live on a filesystem local to the process: SQLite locking over SMB/NFS is unreliable.
+data_root = "var/data"
+# documents_root is the shareable archive, organized by delivery date, and holds .tmp/ so
+# that placing a downloaded file is an atomic rename within a single filesystem.
+documents_root = "var/documents"
+
+[retention]
+# N retained dates, counting today: first_retained_date = today - (N - 1). The same
+# frontier drives the query window, the purge, and the inbox.
+days = 7
+
+[registry]
+# Days a cached FCA package is used before it is downloaded again. The registry only moves
+# when a company files a registration form, so a week-old snapshot names companies exactly
+# as today's does.
+max_age_days = 7
+
+[source]
+# Anchors "today", the date directories, the retention frontier, and the log timestamps.
+# Always the timezone of the source, never that of the host. An unknown name refuses to
+# start instead of falling back.
+timezone = "America/Sao_Paulo"
+# Seconds between requests. The backend behind the page drops under load; this is a floor,
+# not a target.
+min_request_interval = 15.0
+# Safety fuse: a single run never issues more requests than this, whatever it has left to do.
+max_requests_per_run = 200
+# Overridden only to point at a test server or a mirror.
+base_url = "https://www.rad.cvm.gov.br/ENETWeb/"
+
+# Folder names, keyed by zero-padded CVM code, for when the resolver's pick is
+# typographically right and humanly wrong. Values are validated, never sanitized: an
+# override is a deliberate act, and repairing one quietly would name a folder after
+# something nobody wrote. Renaming here does not rename folders already created — the
+# folder name is a snapshot, and identity lives in the manifest.
+[prefix_overrides]
+# "003549" = "SCHLOSSER"

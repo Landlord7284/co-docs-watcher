@@ -15,8 +15,13 @@ archive than intended — and an archive that looks empty is indistinguishable f
 market. Steps 1 and 2 are explicit requests: if the file named there does not exist, the
 watcher refuses to start rather than quietly moving down the chain.
 
-Anything invalid — unreadable TOML, an unknown key, a relative root, a timezone name the
-system does not know — raises ``ConfigError`` and the CLI exits ``2``.
+Roots may be written relative, and are then resolved against the directory of the
+configuration file itself — a project-local installation is a checkout with a ``config.toml``
+naming ``var/data`` and ``var/documents``, and it archives beside that file wherever the
+command is typed from.
+
+Anything invalid — unreadable TOML, an unknown key, a timezone name the system does not
+know — raises ``ConfigError`` and the CLI exits ``2``.
 """
 
 from __future__ import annotations
@@ -63,7 +68,7 @@ DEFAULT_SOURCE_BASE_URL = "https://www.rad.cvm.gov.br/ENETWeb/"
 DEFAULT_RETENTION_DAYS = 7
 
 #: Seconds between requests. The backend behind the page drops under load; this is the floor.
-DEFAULT_MIN_REQUEST_INTERVAL = 5.0
+DEFAULT_MIN_REQUEST_INTERVAL = 15.0
 
 #: Safety fuse: a single run never issues more requests than this, whatever it still has to do.
 DEFAULT_MAX_REQUESTS_PER_RUN = 200
@@ -248,8 +253,8 @@ def _from_file(path: Path) -> Config:
     source = _section(raw, "source", path)
 
     return Config(
-        data_root=_absolute_path(paths, "data_root", where="paths", path=path),
-        documents_root=_absolute_path(paths, "documents_root", where="paths", path=path),
+        data_root=_root_path(paths, "data_root", where="paths", path=path),
+        documents_root=_root_path(paths, "documents_root", where="paths", path=path),
         timezone=_timezone(
             _string(source, "timezone", DEFAULT_TIMEZONE, where="source", path=path)
         ),
@@ -327,7 +332,16 @@ def _section(raw: Mapping[str, Any], name: str, path: Path) -> Mapping[str, Any]
     return section
 
 
-def _absolute_path(section: Mapping[str, Any], key: str, *, where: str, path: Path) -> Path:
+def _root_path(section: Mapping[str, Any], key: str, *, where: str, path: Path) -> Path:
+    """A root directory, always returned absolute.
+
+    A relative root is anchored on the **directory holding the configuration file**, never on
+    the current one: that is what makes a project-local installation portable — clone, edit
+    nothing, run, and the archive appears beside the configuration that named it. Anchoring on
+    the working directory instead would make the same file mean a different archive depending
+    on where the command was typed, and a run from cron would quietly build a second, empty
+    archive somewhere else.
+    """
     if key not in section:
         raise ConfigError(f"{path}: [{where}] {key} is required")
     value = section[key]
@@ -335,11 +349,11 @@ def _absolute_path(section: Mapping[str, Any], key: str, *, where: str, path: Pa
         raise ConfigError(f"{path}: [{where}] {key} must be a non-empty string")
     resolved = Path(value).expanduser()
     if not resolved.is_absolute():
-        raise ConfigError(
-            f"{path}: [{where}] {key} must be an absolute path (got {value!r}); relative roots "
-            "exist only in the built-in defaults, and only with a warning"
-        )
-    return resolved
+        # ``path`` itself can be relative — ``--config config.toml`` is the common spelling —
+        # so the anchor is resolved before joining: a root is absolute by the time anything
+        # downstream sees it, whatever the command line looked like.
+        resolved = path.resolve().parent / resolved
+    return Path(os.path.normpath(resolved))
 
 
 def _http_url(value: str, *, key: str, where: str, path: Path | None) -> str:

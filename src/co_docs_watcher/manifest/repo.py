@@ -301,10 +301,18 @@ class DocumentRepository(_Repository):
         return record
 
     def in_state(self, *states: LocalState) -> list[DocumentRecord]:
+        """Documents in any of ``states``, most recent delivery date first.
+
+        The order is the fetch queue's, and it is the reason it is stated here rather than
+        at the call site: a run that is cut short — by the request budget, by the source
+        going down, by a captcha — should have spent what it had on the days a reader opens
+        first. Within one day publication order is kept, because two documents of the same
+        day arrive in the same run seconds apart and reordering them buys nothing.
+        """
         placeholders = ", ".join("?" for _ in states)
         rows = self._connection.execute(
             f"SELECT * FROM documents WHERE local_state IN ({placeholders}) "
-            "ORDER BY delivery_date, document_id, version",
+            "ORDER BY delivery_date DESC, document_id, version",
             [str(state) for state in states],
         )
         return [_record(row) for row in rows]

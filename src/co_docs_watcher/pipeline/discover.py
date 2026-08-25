@@ -96,7 +96,7 @@ def discover(
         logger.warning("the watch list is empty; nothing to discover")
         return DiscoveryOutcome(0, 0, 0, 0, 0, (), (), (), ())
 
-    documents = source.list_window(window.dates)
+    documents = source.list_window(window.dates_newest_first)
     state = _Merge(manifest, criteria)
     for document in documents:
         state.observed += 1

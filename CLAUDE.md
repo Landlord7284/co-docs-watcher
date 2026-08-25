@@ -66,16 +66,16 @@ Exit code `4` exists because `SolicitarCaptcha: "S"` is not a transient failure:
 
 Flag names are English, always. `--config` is valid before or after the subcommand. Any flag whose destination differs from its option string needs an explicit `metavar`, or `argparse` leaks the internal name into the help text.
 
-Config discovery chain, in order: `--config` → `$CO_WATCHER_CONFIG` → `./config.toml` → `./co-docs-watcher.toml` → `~/.config/co-docs-watcher/config.toml` → built-in defaults. Falling back to the defaults **logs a deliberate warning**: they point at `./var/…`, and a silent fallback means operating on a different archive than intended. `data_root` and `documents_root` must be absolute in a real installation. Unknown sections and unknown keys are rejected rather than ignored: a typo that silently keeps a default is a configuration that lies. A path named by `--config` or `$CO_WATCHER_CONFIG` that does not exist refuses to start instead of falling through to the next candidate — both are explicit requests.
+Config discovery chain, in order: `--config` → `$CO_WATCHER_CONFIG` → `./config.toml` → `./co-docs-watcher.toml` → `~/.config/co-docs-watcher/config.toml` → built-in defaults. Falling back to the defaults **logs a deliberate warning**: they point at `./var/…`, and a silent fallback means operating on a different archive than intended. `data_root` and `documents_root` may be written relative, and are then resolved against the **directory of the configuration file**, never the working directory: a project-local installation is a checkout with a `config.toml` naming `var/data` and `var/documents`, and it archives in the same place whether it is run by hand or from cron. Anchoring on the working directory would let one file mean a different archive per caller — the same silent-second-archive failure the built-in defaults warn about. Unknown sections and unknown keys are rejected rather than ignored: a typo that silently keeps a default is a configuration that lies. A path named by `--config` or `$CO_WATCHER_CONFIG` that does not exist refuses to start instead of falling through to the next candidate — both are explicit requests.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `paths.data_root` | `./var/data` (fallback only) | private root: YAML, manifest, lock, FCA cache |
-| `paths.documents_root` | `./var/documents` (fallback only) | the shareable archive, and `.tmp/` |
+| `paths.data_root` | `./var/data` (fallback only) — relative to the config file | private root: YAML, manifest, lock, FCA cache |
+| `paths.documents_root` | `./var/documents` (fallback only) — relative to the config file | the shareable archive, and `.tmp/` |
 | `retention.days` | `7` | `N`, retained dates **including today** |
 | `registry.max_age_days` | `7` | days a cached FCA package is used without re-downloading |
 | `source.timezone` | `America/Sao_Paulo` | anchors dates, directory names, and log timestamps |
-| `source.min_request_interval` | `5.0` | seconds between requests; the backend is fragile |
+| `source.min_request_interval` | `15.0` | seconds between requests; the backend is fragile |
 | `source.max_requests_per_run` | `200` | safety fuse for a single run |
 | `source.base_url` | `https://www.rad.cvm.gov.br/ENETWeb/` | overridden only to point a test server or a mirror |
 
@@ -123,8 +123,8 @@ src/co_docs_watcher/
 1. **lock** — `flock` on `data_root`.
 2. **reconcile** — intermediate states left by an interrupted run.
 3. **registry** — refresh the FCA if stale. Failure here blocks new registrations, never monitoring.
-4. **discover** — one sweep per day of the window, filtered locally against the watched CVM codes; `Ativo` goes to the queue, `Inativo`/`Cancelado` reconcile what is already on disk: the sweep flags the state and the enactment — the same one step 2 performs — runs immediately after it, so a cancellation observed today takes the file with it today.
-5. **fetch** — download to `.tmp/`, validate, extract if ZIP, atomic `rename`.
+4. **discover** — one sweep per day of the window, **most recent day first**, filtered locally against the watched CVM codes; `Ativo` goes to the queue, `Inativo`/`Cancelado` reconcile what is already on disk: the sweep flags the state and the enactment — the same one step 2 performs — runs immediately after it, so a cancellation observed today takes the file with it today.
+5. **fetch** — download to `.tmp/`, validate, extract if ZIP, atomic `rename`. The queue drains **most recent delivery date first**, publication order kept within a day.
 6. **purge** — whatever aged out of the window.
 7. **inbox** — regenerate the index of *every* day in the window, not just today's.
 
@@ -157,10 +157,13 @@ documents_root/
 └── .tmp/
 ```
 
-Three rules that look like detail and are not:
+**A subfolder is for structured packages only.** What decides the layout is the shape of the delivery, not the shape of the response: a delivery that is one filing lands as one named PDF in the company's folder, whether the source answered a bare PDF or a container the adapter unwrapped. The day's directory listing has to read as the day's publications, not as a row of folders to open one by one.
 
-- **The generated PDF inside a ZIP is renamed.** It arrives with the generation instant in its name — two downloads produce two names. The on-disk name is imposed by the watcher, in the same convention as the rest. Other ZIP members keep their origin names, which are stable.
-- **A category subfolder carries identity in the PDF name, not the directory.** Two deliveries of the same category on the same day must not collide; if they would, the subfolder gains a `_V{version}` suffix.
+Four rules that look like detail and are not:
+
+- **An IPE container is unwrapped at the boundary and never reaches the archive.** An eventual filing delivered through the IPE module arrives as a ZIP with exactly two members: `InformacoesPeriodicasEventuais.xml`, an envelope carrying metadata the listing already gave us, and the filing itself under a name that runs CVM code, dates and protocol together with an invented `.ipe` extension. The envelope is validated, read for the extension it declares, and discarded; the attachment leaves as the single file of the delivery, named in the usual convention. An envelope with any number of attachments other than one is an unmeasured shape and is archived whole — discarding the envelope is the one irreversible move here, and it is not made on a hunch.
+- **The generated PDF inside a structured ZIP is renamed.** It arrives with the generation instant in its name — two downloads produce two names. The on-disk name is imposed by the watcher, in the same convention as the rest. Other members of a structured package keep their origin names, which are stable.
+- **A category subfolder carries identity in the PDF name, not the directory.** Two structured deliveries of the same category on the same day must not collide; if they would, the subfolder gains a `_V{version}` suffix.
 - **`.tmp/` lives under `documents_root`**, so `rename` stays atomic within a single filesystem.
 
 The inbox index includes the subject (listing field 11). A cancelled document does not become a file, but is mentioned in the inbox of the day it was observed, and so is one the watcher could not fetch — silence about a document reads exactly like nothing having been published.
@@ -238,12 +241,12 @@ Full contract, with measurement dates and payload examples, in `docs/fonte-rad.m
 - **The envelope is JSON, the content is not**: rows come in a single string, `$&&*` between rows, `$&` between fields, no escaping. The trailing row separator leaves an empty last element — discard it. **Validate exactly 12 fields per row and abort the collection on divergence**: a subject containing `$&` would corrupt the parse silently.
 - **HTTP is always 200.** Business errors and backend failures arrive as `temErro: true` with text in `msgErro` — that is a retryable `TransientSourceError`, never an empty result. A robot that only checks status codes records silence as "nothing new".
 - **Fields to parse**: 0 CVM code (hyphen-formatted, `00951-2`), 1 legal name, 2 category, 3 type, 4 species, 5 reference date, 6 delivery date, 7 status (`Ativo`/`Inativo`/`Cancelado`), 8 version, 9 modality (`AP`/`RE`/`RC`, the third observed 2026-08-25), 10 action-icons HTML (carries the download arguments), 11 **subject**. Fields 4–6 embed a normalized sort key in `<spanOrder>` tags (`20260804`) — parse that, not the display format.
-- **Download** is a single GET (`frmDownloadDocumento.aspx?Tela=ext&numSequencia=…&numVersao=…&numProtocolo=…&descTipo=&CodigoInstituicao=1`) for every category; only the content differs (PDF or ZIP). The four arguments come from `OpenDownloadDocumentos(...)` in field 10.
+- **Download** is a single GET (`frmDownloadDocumento.aspx?Tela=ext&numSequencia=…&numVersao=…&numProtocolo=…&descTipo=&CodigoInstituicao=1`) for every category; only the content differs (PDF or ZIP). The four arguments come from `OpenDownloadDocumentos(...)` in field 10. Category does not determine the type, not even for eventual filings: a Fato Relevante measured 2026-08-24 arrived as a bare PDF and a Comunicado ao Mercado measured 2026-08-25 arrived as an IPE container. Only the content signature decides.
 - **`Content-Type` always lies** (`text/html` for PDFs and ZIPs alike) and `Content-Disposition` names are useless. The real type comes from the content signature (`%PDF-`, `PK\x03\x04`); the on-disk name is built by the watcher.
 - **Status and modality are not server filters** — the API always returns `Ativo`, `Inativo`, and `Cancelado` together. Filtering is the watcher's responsibility, and a cancellation arriving for free is news, not noise.
 - **Category filtering on the server is a trap**: a wrong category code returns zero rows with no error, indistinguishable from a quiet company. Phase 0 always requests `EST_-1,IPE_-1_-1_-1` (everything) and filters locally, which makes the trap unreachable. If server-side filtering is ever added, the code table must be copied from `cboDocumentos` (in `rad/vocabulary.py`), never deduced.
 - **`SolicitarCaptcha: "S"` ends the run** with exit code `4`. It is not backoff material: there is no legitimate workaround, and insisting aggravates the trigger. Reduce frequency instead.
-- **The backend is fragile**: the WCF service behind the page drops under load (observed after ~a dozen calls in a few minutes, staying down for about an hour). Exponential backoff, a per-run request cap, and a minimum interval of **5 s** between requests.
+- **The backend is fragile**: the WCF service behind the page drops under load (observed after ~a dozen calls in a few minutes, staying down for about an hour). Exponential backoff, a per-run request cap, and a minimum interval of **15 s** between requests. That figure is chosen with its eyes open: a dozen calls in a few minutes is roughly one every 15 s, so the floor sits *at* the estimated spacing of the only failure ever observed, not beyond it — and the threshold itself is unknown and can only be learned by provoking it, which costs an hour of the source each time. What makes it acceptable is the ordering: the window is swept and the queue drained most recent day first, so a run the source cuts short has already spent itself on the days a reader opens. `max_requests_per_run` is a fuse and never a working figure — a run sweeps the window in 7 requests and downloads one per new document.
 - **The system is recently migrated** (live since 06/07/2026): when the field count or envelope format diverges, fail loudly and alert — never degrade silently.
 
 ## Invariants
@@ -251,11 +254,11 @@ Full contract, with measurement dates and payload examples, in `docs/fonte-rad.m
 Violating any of these requires explicit, justified declaration in this document — silent divergence is what must never happen.
 
 - Identity/dedupe key is `(document_id, version)`; the content hash never dedupes.
-- Every run queries the whole window `[today - (N-1), today]`. There is no incremental interval; the watermark records completed progress and raises alerts, never feeds the interval.
+- Every run queries the whole window `[today - (N-1), today]`. There is no incremental interval; the watermark records completed progress and raises alerts, never feeds the interval. The window is swept and the queue drained **most recent day first**: a run is cut short by a captcha, by the request budget, or by the backend going down, and what it managed to do should be the days a reader opens first, not the days purge is about to reach. Order is a policy of the sweep and the queue, never a property of the window — the inbox and the retention frontier read the window as a set of days.
 - A rediscovered document updates mutable fields and never triggers a new download. `status` in the manifest means "last state observed within the window".
-- Written file extension is decided by the actual response: content signature (decisive) > `Content-Disposition` > `Content-Type` (least trustworthy).
+- Written file extension is decided by the actual content, never by the name it arrived under: content signature (decisive) > `Content-Disposition` (for a response) or the envelope's `ExtensaoArquivo` (for an IPE attachment) > `Content-Type` (least trustworthy). The rule applies to a ZIP member exactly as it applies to a response — it is inside the container that this source hides a PDF behind an invented extension. A declared extension is validated before it may name a file; an attachment that satisfies neither signature nor declaration keeps its origin name and its container.
 - Validate content; a successful parse is not enough. Reject HTML bodies even when well-formed (an error page arrives with HTTP 200), reject empty ZIPs or entries containing `../`, require a plausible XML root, parse with external entity resolution disabled, cap response sizes.
-- Two roots: `data_root` (private — YAML, SQLite manifest, lock, FCA cache; must live on a filesystem local to the process, since SQLite over SMB/NFS has unreliable locking) and `documents_root` (the shareable archive). Download temporaries (`.part`) go in `documents_root/.tmp/` so `rename` is atomic.
+- Two roots: `data_root` (private — YAML, SQLite manifest, lock, FCA cache; must live on a filesystem local to the process, since SQLite over SMB/NFS has unreliable locking) and `documents_root` (the shareable archive). Both are absolute by the time anything downstream sees them; a relative value in the configuration file is anchored on that file's own directory. Download temporaries (`.part`) go in `documents_root/.tmp/` so `rename` is atomic.
 - Date directories are `yyyy-mm-dd`, zero-padded, keyed on **delivery date** — lexicographic order must equal chronological order.
 - `N` is the number of retained dates including today: `first_retained_date = today - (N-1)`. Purge, query window, and inbox all use this same frontier, or discovery re-downloads what purge deletes. Retention is a single global sliding window, configurable; per-category retention is backlog.
 - The lock is `flock`, not a pidfile: the kernel releases it when the owner dies, so there is no stale lock to detect and a crash never leaves the watcher stuck.
