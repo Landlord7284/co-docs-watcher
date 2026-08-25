@@ -91,7 +91,11 @@ TRANSITIONS: dict[LocalState, frozenset[LocalState]] = {
             LocalState.PURGED,
         }
     ),
-    LocalState.DEACTIVATED: frozenset({LocalState.DISCOVERED, LocalState.PURGED}),
+    # Cancellation can arrive after supersession: the source may cancel a publication it had
+    # already demoted, and the inbox of the day it was observed still has to say so.
+    LocalState.DEACTIVATED: frozenset(
+        {LocalState.DISCOVERED, LocalState.CANCELLED, LocalState.PURGED}
+    ),
     LocalState.CANCELLED: frozenset({LocalState.PURGED}),
     # Aged out of the window. The window only slides forward; nothing comes back.
     LocalState.PURGED: frozenset(),
