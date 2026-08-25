@@ -15,6 +15,9 @@ dependencies = [
     "tzdata",
 ]
 
+[project.scripts]
+co-docs-watcher = "co_docs_watcher.cli:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest",
