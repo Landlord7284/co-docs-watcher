@@ -34,6 +34,8 @@ __all__ = [
     "ItemError",
     "LockHeldError",
     "ManifestError",
+    "RegistryError",
+    "RegistryNotPublishedError",
     "SchemaTooNewError",
     "SourceContractError",
     "SourceError",
@@ -129,6 +131,28 @@ class SourceContractError(SourceError):
     """
 
     severity: ClassVar[int] = logging.CRITICAL
+
+
+class RegistryError(WatcherError):
+    """The FCA registry could not be refreshed into something usable.
+
+    Deliberately not fatal to a run: the watch list persists the resolved folder prefix, so
+    monitoring needs no registry at all. What a stale or absent registry does block is
+    *registration* — resolving a new company is exactly the operation that needs fresh
+    identity data, and guessing it would name a folder that outlives the guess.
+    """
+
+    batch_fatal: ClassVar[bool] = False
+
+
+class RegistryNotPublishedError(RegistryError):
+    """The registry package for a given year does not exist yet.
+
+    Expected, not exceptional: the yearly FCA file appears when the first company files in
+    January. The caller falls back to the previous year rather than treating it as a failure.
+    """
+
+    severity: ClassVar[int] = logging.WARNING
 
 
 class ManifestError(WatcherError):

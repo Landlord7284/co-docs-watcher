@@ -11,6 +11,7 @@ from co_docs_watcher.config import (
     CONFIG_ENV_VAR,
     DEFAULT_MAX_REQUESTS_PER_RUN,
     DEFAULT_MIN_REQUEST_INTERVAL,
+    DEFAULT_REGISTRY_MAX_AGE_DAYS,
     DEFAULT_RETENTION_DAYS,
     DEFAULT_TIMEZONE,
     discover_config_path,
@@ -96,6 +97,7 @@ def test_documented_defaults_apply_when_the_file_omits_them(tmp_path: Path) -> N
     assert config.retention_days == DEFAULT_RETENTION_DAYS
     assert config.min_request_interval == DEFAULT_MIN_REQUEST_INTERVAL
     assert config.max_requests_per_run == DEFAULT_MAX_REQUESTS_PER_RUN
+    assert config.registry_max_age_days == DEFAULT_REGISTRY_MAX_AGE_DAYS
 
 
 def test_values_from_the_file_win(tmp_path: Path) -> None:
@@ -106,6 +108,9 @@ def test_values_from_the_file_win(tmp_path: Path) -> None:
 [retention]
 days = 21
 
+[registry]
+max_age_days = 30
+
 [source]
 timezone = "UTC"
 min_request_interval = 8.5
@@ -114,6 +119,7 @@ max_requests_per_run = 40
     )
     config = load_config(env={}, cwd=tmp_path, home=tmp_path)
     assert config.retention_days == 21
+    assert config.registry_max_age_days == 30
     assert config.timezone_name == "UTC"
     assert config.min_request_interval == 8.5
     assert config.max_requests_per_run == 40
@@ -124,6 +130,7 @@ def test_the_roots_derive_the_paths_the_rest_of_the_system_uses(tmp_path: Path) 
     config = load_config(env={}, cwd=tmp_path, home=tmp_path)
     assert config.lock_path == Path("/srv/co-docs-watcher/data/watcher.lock")
     assert config.manifest_path == Path("/srv/co-docs-watcher/data/manifest.sqlite")
+    assert config.registry_cache_root == Path("/srv/co-docs-watcher/data/cvm-cache")
     # .tmp/ lives under documents_root so that placement is an atomic rename.
     assert config.staging_root == Path("/srv/co-docs-watcher/documents/.tmp")
     assert config.inbox_root == Path("/srv/co-docs-watcher/documents/_inbox")
@@ -157,6 +164,7 @@ documents_root = "~/watcher/documents"
         (VALID + "[source]\nmin_request_interval = 0\n", "number > 0"),
         (VALID + "[source]\nmax_requests_per_run = -3\n", "integer >= 1"),
         (VALID + "[retention]\nweeks = 3\n", "unknown key"),
+        (VALID + "[registry]\nmax_age_days = 0\n", "integer >= 1"),
         (VALID + "[archive]\nkeep = true\n", "unknown section"),
         ('paths = "nope"\n', "must be a table"),
     ],

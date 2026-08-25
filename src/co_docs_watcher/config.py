@@ -37,6 +37,7 @@ __all__ = [
     "CONFIG_ENV_VAR",
     "DEFAULT_MAX_REQUESTS_PER_RUN",
     "DEFAULT_MIN_REQUEST_INTERVAL",
+    "DEFAULT_REGISTRY_MAX_AGE_DAYS",
     "DEFAULT_RETENTION_DAYS",
     "DEFAULT_TIMEZONE",
     "Config",
@@ -60,6 +61,10 @@ DEFAULT_MIN_REQUEST_INTERVAL = 5.0
 #: Safety fuse: a single run never issues more requests than this, whatever it still has to do.
 DEFAULT_MAX_REQUESTS_PER_RUN = 200
 
+#: Days a cached FCA package is considered current. The registry only moves when a company
+#: files a registration form, so a week-old snapshot names companies exactly as today's does.
+DEFAULT_REGISTRY_MAX_AGE_DAYS = 7
+
 #: Relative and deliberately unusable-by-accident: reaching these means the warning fired.
 DEFAULT_DATA_ROOT = Path("var/data")
 DEFAULT_DOCUMENTS_ROOT = Path("var/documents")
@@ -67,6 +72,7 @@ DEFAULT_DOCUMENTS_ROOT = Path("var/documents")
 _SCHEMA: dict[str, set[str]] = {
     "paths": {"data_root", "documents_root"},
     "retention": {"days"},
+    "registry": {"max_age_days"},
     "source": {"timezone", "min_request_interval", "max_requests_per_run"},
 }
 
@@ -90,6 +96,7 @@ class Config:
     retention_days: int
     min_request_interval: float
     max_requests_per_run: int
+    registry_max_age_days: int
     origin: Path | None
 
     @property
@@ -107,6 +114,10 @@ class Config:
     @property
     def manifest_path(self) -> Path:
         return self.data_root / "manifest.sqlite"
+
+    @property
+    def registry_cache_root(self) -> Path:
+        return self.data_root / "cvm-cache"
 
     @property
     def staging_root(self) -> Path:
@@ -177,6 +188,7 @@ def load_config(
             retention_days=DEFAULT_RETENTION_DAYS,
             min_request_interval=DEFAULT_MIN_REQUEST_INTERVAL,
             max_requests_per_run=DEFAULT_MAX_REQUESTS_PER_RUN,
+            registry_max_age_days=DEFAULT_REGISTRY_MAX_AGE_DAYS,
             origin=None,
         )
         return _installed(defaults)
@@ -210,6 +222,7 @@ def _from_file(path: Path) -> Config:
     _reject_unknown_keys(raw, path)
     paths = _section(raw, "paths", path)
     retention = _section(raw, "retention", path)
+    registry = _section(raw, "registry", path)
     source = _section(raw, "source", path)
 
     return Config(
@@ -226,6 +239,13 @@ def _from_file(path: Path) -> Config:
         ),
         max_requests_per_run=_positive_int(
             source, "max_requests_per_run", DEFAULT_MAX_REQUESTS_PER_RUN, where="source", path=path
+        ),
+        registry_max_age_days=_positive_int(
+            registry,
+            "max_age_days",
+            DEFAULT_REGISTRY_MAX_AGE_DAYS,
+            where="registry",
+            path=path,
         ),
         origin=path,
     )

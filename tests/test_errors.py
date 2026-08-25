@@ -15,6 +15,8 @@ from co_docs_watcher.errors import (
     ItemError,
     LockHeldError,
     ManifestError,
+    RegistryError,
+    RegistryNotPublishedError,
     SchemaTooNewError,
     SourceContractError,
     SourceError,
@@ -35,6 +37,8 @@ ALL_ERRORS = [
     DocumentError,
     CompanyError,
     ManifestError,
+    RegistryError,
+    RegistryNotPublishedError,
     SchemaTooNewError,
 ]
 
@@ -56,6 +60,7 @@ def test_every_error_descends_from_the_base(error_type: type[Exception]) -> None
         (DocumentError, ExitCode.PARTIAL_FAILURE),
         (CompanyError, ExitCode.PARTIAL_FAILURE),
         (ManifestError, ExitCode.PARTIAL_FAILURE),
+        (RegistryError, ExitCode.PARTIAL_FAILURE),
         (SchemaTooNewError, ExitCode.INVALID_CONFIG),
     ],
 )
@@ -78,6 +83,8 @@ def test_unforeseen_exceptions_map_to_partial_failure() -> None:
         (DocumentError, logging.ERROR),
         (CompanyError, logging.ERROR),
         (SourceContractError, logging.CRITICAL),
+        (RegistryError, logging.ERROR),
+        (RegistryNotPublishedError, logging.WARNING),
     ],
 )
 def test_severity_ladder(error_type: type[WatcherError], expected: int) -> None:
@@ -97,6 +104,12 @@ def test_captcha_is_terminal() -> None:
 @pytest.mark.parametrize("error_type", [ItemError, DocumentError, CompanyError])
 def test_item_errors_never_kill_the_batch(error_type: type[WatcherError]) -> None:
     assert not error_type.batch_fatal
+
+
+def test_a_registry_failure_blocks_registration_and_not_monitoring() -> None:
+    # The watch list persists the resolved prefix, so a run needs no registry at all.
+    assert not RegistryError.batch_fatal
+    assert not RegistryNotPublishedError.batch_fatal
 
 
 @pytest.mark.parametrize(
