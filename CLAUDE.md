@@ -66,7 +66,16 @@ Exit code `4` exists because `SolicitarCaptcha: "S"` is not a transient failure:
 
 Flag names are English, always. `--config` is valid before or after the subcommand. Any flag whose destination differs from its option string needs an explicit `metavar`, or `argparse` leaks the internal name into the help text.
 
-Config discovery chain, in order: `--config` → `$CO_WATCHER_CONFIG` → `./config.toml` → `./co-docs-watcher.toml` → `~/.config/co-docs-watcher/config.toml` → built-in defaults. Falling back to the defaults **logs a deliberate warning**: they point at `./var/…`, and a silent fallback means operating on a different archive than intended. `data_root` and `documents_root` must be absolute in a real installation.
+Config discovery chain, in order: `--config` → `$CO_WATCHER_CONFIG` → `./config.toml` → `./co-docs-watcher.toml` → `~/.config/co-docs-watcher/config.toml` → built-in defaults. Falling back to the defaults **logs a deliberate warning**: they point at `./var/…`, and a silent fallback means operating on a different archive than intended. `data_root` and `documents_root` must be absolute in a real installation. Unknown sections and unknown keys are rejected rather than ignored: a typo that silently keeps a default is a configuration that lies. A path named by `--config` or `$CO_WATCHER_CONFIG` that does not exist refuses to start instead of falling through to the next candidate — both are explicit requests.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `paths.data_root` | `./var/data` (fallback only) | private root: YAML, manifest, lock, FCA cache |
+| `paths.documents_root` | `./var/documents` (fallback only) | the shareable archive, and `.tmp/` |
+| `retention.days` | `7` | `N`, retained dates **including today** |
+| `source.timezone` | `America/Sao_Paulo` | anchors dates, directory names, and log timestamps |
+| `source.min_request_interval` | `5.0` | seconds between requests; the backend is fragile |
+| `source.max_requests_per_run` | `200` | safety fuse for a single run |
 
 ## Architecture
 

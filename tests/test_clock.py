@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -17,6 +18,7 @@ from co_docs_watcher.clock import (
     source_timezone,
     window_ending,
 )
+from co_docs_watcher.config import load_config
 from co_docs_watcher.errors import ConfigError
 
 SAO_PAULO = ZoneInfo("America/Sao_Paulo")
@@ -90,6 +92,17 @@ def test_directory_names_are_zero_padded() -> None:
 def test_the_timezone_must_be_installed_before_it_is_read() -> None:
     with pytest.raises(ConfigError, match="not installed"):
         source_timezone()
+
+
+def test_config_load_installs_the_source_timezone(tmp_path: Path) -> None:
+    (tmp_path / "config.toml").write_text(
+        '[paths]\ndata_root = "/a"\ndocuments_root = "/b"\n'
+        '[source]\ntimezone = "America/Sao_Paulo"\n',
+        encoding="utf-8",
+    )
+    load_config(env={}, cwd=tmp_path, home=tmp_path)
+    assert source_timezone().key == "America/Sao_Paulo"
+    assert Clock.installed().timezone.key == "America/Sao_Paulo"
 
 
 def frozen(moment: datetime) -> type[datetime]:
