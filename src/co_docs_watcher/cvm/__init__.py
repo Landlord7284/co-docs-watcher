@@ -5,6 +5,21 @@ called, what it is called *now* versus what it was called before, which tickers 
 under. Nothing here knows about documents.
 """
 
+from co_docs_watcher.cvm.cache import RegistryCache
 from co_docs_watcher.cvm.registry import Registry, RegistryRecord, parse_package
+from co_docs_watcher.cvm.search import MatchKind, SearchResult, search
+from co_docs_watcher.cvm.ticker import CompanyPrefix, PrefixSource, company_prefix, ticker_root
 
-__all__ = ["Registry", "RegistryRecord", "parse_package"]
+__all__ = [
+    "CompanyPrefix",
+    "MatchKind",
+    "PrefixSource",
+    "Registry",
+    "RegistryCache",
+    "RegistryRecord",
+    "SearchResult",
+    "company_prefix",
+    "parse_package",
+    "search",
+    "ticker_root",
+]

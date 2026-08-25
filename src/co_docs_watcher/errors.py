@@ -21,10 +21,12 @@ consumed by ``cli.py``, so that the codes documented for operators have exactly 
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from enum import IntEnum
 from typing import ClassVar
 
 __all__ = [
+    "AmbiguousQueryError",
     "CaptchaRequiredError",
     "CompanyError",
     "ConfigError",
@@ -40,6 +42,8 @@ __all__ = [
     "SourceContractError",
     "SourceError",
     "TransientSourceError",
+    "WatchListConflictError",
+    "WatchListError",
     "WatcherError",
     "exit_code_for",
 ]
@@ -179,6 +183,27 @@ class IllegalTransitionError(ManifestError):
     """
 
 
+class WatchListError(WatcherError):
+    """The watch list cannot be read or written as it stands.
+
+    A hand-edited ``companies.yaml`` that no longer parses, or an entry missing the fields the
+    archive is built from. It exits like a configuration problem because that is what it is:
+    the file is an input a human maintains, and dropping the entries that fail to parse would
+    silently stop monitoring a company.
+    """
+
+    exit_code: ClassVar[ExitCode] = ExitCode.INVALID_CONFIG
+
+
+class WatchListConflictError(WatchListError):
+    """The watch list changed on disk between being loaded and being written.
+
+    The human's edit wins, always: the watcher abandons its own write rather than overwrite a
+    file it did not read. Nothing is lost that a second run cannot redo, and the alternative
+    is losing an edit that only existed in one place.
+    """
+
+
 class ItemError(WatcherError):
     """A failure scoped to a single item, recorded and skipped.
 
@@ -195,6 +220,19 @@ class DocumentError(ItemError):
 
 class CompanyError(ItemError):
     """One company could not be resolved against the registry."""
+
+
+class AmbiguousQueryError(CompanyError):
+    """A query matched more than one company.
+
+    Narrowing candidates down to one is a decision, and the watcher does not make it: picking
+    the first match would register the wrong company under a name that looks right. The
+    candidates travel with the error so the human can be shown what to choose between.
+    """
+
+    def __init__(self, message: str, candidates: Sequence[str] = ()) -> None:
+        super().__init__(message)
+        self.candidates = tuple(candidates)
 
 
 def exit_code_for(error: BaseException) -> ExitCode:

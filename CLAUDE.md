@@ -108,7 +108,10 @@ src/co_docs_watcher/
 │   ├── download.py   GET, content sniffing, ZIP extraction
 │   └── vocabulary.py category table copied from cboDocumentos
 ├── manifest/         db.py (connection, pragmas, migrations) + repo.py (repositories)
-├── scope/            companies.yaml, models, resolver
+├── scope/            the watch list: which companies this archive is about
+│   ├── models.py     what an entry stores, and why it stores it
+│   ├── store.py      round-trip YAML, hash guard, atomic rewrite
+│   └── resolver.py   a query -> an entry
 └── pipeline/         discover, fetch, reconcile, purge, inbox
 ```
 
@@ -188,6 +191,21 @@ The FCA (*Formulário Cadastral*) is the annual registration form, published as 
 - **The latest version per company is re-derived** from `(Versao, ID_Documento)`, and trading codes are joined on the selected version's `ID_Documento`. The published general member already arrives reduced to one row per company — a promise nobody made, so it is not relied on.
 - **Only codes with an empty `Data_Fim_Negociacao` are active** (55 of 963 rows carried an end date on 2026-08-24). `Codigo_Negociacao` is free text: it arrives in lower case (`tgma3`), as junk (`B3`, `NÃO HÁ`, bare numbers), or empty for debentures and commercial notes.
 - **The cache is under `data_root/cvm-cache/`**, one file per year, refreshed only when older than `registry.max_age_days`. A download that fails, arrives corrupt, or exceeds the size cap **never replaces the cached snapshot**: the previous one stays and the run continues on it, loudly. Only the absence of any usable snapshot raises — and that blocks `add`, never `run`.
+
+### The watch list
+
+`data_root/companies.yaml` is a file the operator owns; the watcher appends to it and removes from it, and never reorganizes it. One key, `companies`, holding one entry per company:
+
+```yaml
+companies:
+  - cvm_code: '009512'      # what the sweep is filtered against
+    prefix: PETR            # the folder name — a snapshot, never renamed
+    prefix_source: ticker   # override | ticker | legal_name | cvm_code
+    matched_by: ticker      # ticker | cnpj | cvm_code | legal_name | previous_legal_name
+    legal_name: PETROLEO BRASILEIRO S.A. PETROBRAS
+```
+
+`prefix_source` and `matched_by` are recorded because months later "why is this folder called `009512`?" and "why is this company here at all?" must be answerable without re-running anything. Entries are **appended, never sorted** — the order of the file is the human's. An entry that fails to parse aborts the load instead of being skipped: an entry dropped in silence is a company that stops being monitored in silence. `add` refuses ambiguous queries and hands back the candidates rather than choosing.
 
 ## Document identity and states
 

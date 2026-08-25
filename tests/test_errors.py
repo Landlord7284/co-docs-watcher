@@ -7,6 +7,7 @@ import logging
 import pytest
 
 from co_docs_watcher.errors import (
+    AmbiguousQueryError,
     CaptchaRequiredError,
     CompanyError,
     ConfigError,
@@ -22,6 +23,8 @@ from co_docs_watcher.errors import (
     SourceError,
     TransientSourceError,
     WatcherError,
+    WatchListConflictError,
+    WatchListError,
     exit_code_for,
 )
 
@@ -61,6 +64,9 @@ def test_every_error_descends_from_the_base(error_type: type[Exception]) -> None
         (CompanyError, ExitCode.PARTIAL_FAILURE),
         (ManifestError, ExitCode.PARTIAL_FAILURE),
         (RegistryError, ExitCode.PARTIAL_FAILURE),
+        (WatchListError, ExitCode.INVALID_CONFIG),
+        (WatchListConflictError, ExitCode.INVALID_CONFIG),
+        (AmbiguousQueryError, ExitCode.PARTIAL_FAILURE),
         (SchemaTooNewError, ExitCode.INVALID_CONFIG),
     ],
 )
@@ -101,9 +107,18 @@ def test_captcha_is_terminal() -> None:
     assert CaptchaRequiredError.batch_fatal
 
 
-@pytest.mark.parametrize("error_type", [ItemError, DocumentError, CompanyError])
+@pytest.mark.parametrize(
+    "error_type", [ItemError, DocumentError, CompanyError, AmbiguousQueryError]
+)
 def test_item_errors_never_kill_the_batch(error_type: type[WatcherError]) -> None:
     assert not error_type.batch_fatal
+
+
+def test_an_ambiguous_query_carries_the_candidates_a_human_chooses_between() -> None:
+    error = AmbiguousQueryError("two of them", ["015253  ENERGISA S.A.", "014605  ENERGISA MT"])
+
+    assert error.candidates == ("015253  ENERGISA S.A.", "014605  ENERGISA MT")
+    assert AmbiguousQueryError("nothing said about candidates").candidates == ()
 
 
 def test_a_registry_failure_blocks_registration_and_not_monitoring() -> None:
