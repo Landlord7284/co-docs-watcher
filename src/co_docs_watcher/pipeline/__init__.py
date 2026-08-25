@@ -1,0 +1,37 @@
+"""The steps of one run, in the order they happen.
+
+Every step here depends on the ``Source`` protocol and on the neutral models, never on the
+adapter that implements them: the pipeline does not know that the source is RAD, and an
+architecture test keeps it that way.
+
+The steps share one frontier — the ``RetentionWindow`` computed once from the clock — because
+discovery, purge and inbox disagreeing about where the window starts is how a purge deletes
+what the next discovery downloads again.
+"""
+
+from co_docs_watcher.pipeline.discover import DiscoveryOutcome, archive_everything, discover
+from co_docs_watcher.pipeline.fetch import FetchOutcome, fetch_pending
+from co_docs_watcher.pipeline.inbox import InboxOutcome, regenerate
+from co_docs_watcher.pipeline.purge import PurgeOutcome, purge
+from co_docs_watcher.pipeline.reconcile import (
+    EnactedFlags,
+    ReconcileOutcome,
+    enact_flags,
+    reconcile,
+)
+
+__all__ = [
+    "DiscoveryOutcome",
+    "EnactedFlags",
+    "FetchOutcome",
+    "InboxOutcome",
+    "PurgeOutcome",
+    "ReconcileOutcome",
+    "archive_everything",
+    "discover",
+    "enact_flags",
+    "fetch_pending",
+    "purge",
+    "reconcile",
+    "regenerate",
+]
