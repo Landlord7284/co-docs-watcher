@@ -89,8 +89,26 @@ captcha.
 Resolves a company against the FCA registry and appends it to the watch list. A bare
 `QUERY` is tried as ticker, CNPJ, CVM code, and legal-name substring, in that order; a
 typed flag additionally refuses a match found by a different stage than the one named.
-Ambiguous queries are refused and the candidates listed — narrowing is your decision, not
-the watcher's. Adding a company that is already watched changes nothing and says so.
+Narrowing an ambiguous query down to one company is your decision, never the watcher's.
+On a terminal the candidates are numbered and `add` asks which one you meant; Enter — or
+Ctrl-D, or Ctrl-C — cancels and writes nothing (exit `0`, because declining is an answer).
+Anything that is not one of the numbers is asked again. Adding a company that is already
+watched changes nothing and says so.
+
+```
+$ co-docs-watcher add bradesco
+'bradesco' matches 2 companies by legal_name:
+
+  1  019640  BRADESCO LEASING S.A. ARREND MERCANTIL  (no trading code)
+  2  000906  BCO BRADESCO S.A.  (BBDC3, BBDC4)
+
+choose 1-2, or Enter to cancel: 2
+added: 000906  BCO BRADESCO S.A.  -> BBDC/
+```
+
+With input or output redirected — from cron, in a pipeline — there is nobody to answer, so
+an ambiguous query is refused with the candidates listed (exit `1`) instead of prompting at
+a terminal that is not there.
 
 Requires a usable registry: if the FCA package cannot be fetched or read, `add` fails
 (exit `1`) — monitoring by `run` is unaffected.

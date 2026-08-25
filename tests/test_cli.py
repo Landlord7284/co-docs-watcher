@@ -130,6 +130,49 @@ def test_an_ambiguous_query_exits_1_and_lists_the_candidates(
     assert len(captured.err.strip().splitlines()) >= 2  # the error plus the candidates
 
 
+def test_an_ambiguous_query_is_offered_as_a_numbered_choice(
+    config_file: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "_has_a_human", lambda: True)
+    answers = iter(["nine", "2"])  # a typo is re-asked, never resolved generously
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    exit_code = cli.main(["--config", str(config_file), "add", "--name", "S.A."])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "not one of the choices" in captured.out
+    chosen = next(line for line in captured.out.splitlines() if line.startswith("  2  "))
+    added = next(line for line in captured.out.splitlines() if line.startswith("added: "))
+    assert chosen.split()[1] in added  # the CVM code offered as 2 is the one written
+
+
+def test_declining_the_choice_adds_nothing_and_is_not_a_failure(
+    config_file: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "_has_a_human", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "")
+
+    assert cli.main(["--config", str(config_file), "add", "--name", "S.A."]) == 0
+    assert "cancelled" in capsys.readouterr().out
+    assert cli.main(["--config", str(config_file), "list"]) == 0
+    assert "empty" in capsys.readouterr().out
+
+
+def test_an_interrupted_choice_adds_nothing(
+    config_file: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "_has_a_human", lambda: True)
+
+    def interrupted(prompt: str = "") -> str:
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", interrupted)
+
+    assert cli.main(["--config", str(config_file), "add", "--name", "S.A."]) == 0
+    assert "cancelled" in capsys.readouterr().out
+
+
 def test_a_typed_flag_refuses_a_match_by_another_stage(config_file: Path) -> None:
     # 009512 is findable — but by CVM code, not by the ticker the flag promised.
     assert cli.main(["--config", str(config_file), "add", "--ticker", "009512"]) == 1

@@ -10,6 +10,11 @@ subcommands call.
 and refusing one of them is a papercut nobody needs. Every flag whose destination differs
 from its option string carries an explicit ``metavar`` — without one, ``argparse`` leaks the
 internal attribute name into the help text.
+
+This is also the only layer that talks to a human mid-command: ``add`` numbers the candidates
+of an ambiguous query and asks which one. The prompt is offered only when both streams are a
+terminal — with input redirected, from cron, or in a pipeline there is nobody to answer, and
+the ambiguity is refused with the list exactly as before. Nothing below the CLI ever prompts.
 """
 
 from __future__ import annotations
@@ -24,8 +29,8 @@ from co_docs_watcher import __version__
 from co_docs_watcher.clock import Clock
 from co_docs_watcher.config import Config, load_config
 from co_docs_watcher.cvm.cache import RegistryCache
-from co_docs_watcher.cvm.registry import Registry
-from co_docs_watcher.cvm.search import MatchKind
+from co_docs_watcher.cvm.registry import Registry, RegistryRecord
+from co_docs_watcher.cvm.search import MatchKind, SearchResult
 from co_docs_watcher.errors import (
     AmbiguousQueryError,
     CaptchaRequiredError,
@@ -44,7 +49,7 @@ from co_docs_watcher.models import LocalState
 from co_docs_watcher.pipeline import purge, reconcile, regenerate
 from co_docs_watcher.run import execute_run, probe_source
 from co_docs_watcher.scope.models import WatchedCompany
-from co_docs_watcher.scope.resolver import resolve
+from co_docs_watcher.scope.resolver import Chooser, describe, resolve
 from co_docs_watcher.scope.store import WatchList
 from co_docs_watcher.text import normalize_cvm_code, normalize_key
 
@@ -61,6 +66,15 @@ _QUERY_FLAGS: tuple[tuple[str, tuple[MatchKind, ...]], ...] = (
     ("cnpj", (MatchKind.CNPJ,)),
     ("name", (MatchKind.LEGAL_NAME, MatchKind.PREVIOUS_LEGAL_NAME)),
 )
+
+
+class _Cancelled(Exception):
+    """The human was asked which company they meant and declined to say.
+
+    Not a failure: nothing was going to be written, and the operator who typed Enter knows
+    exactly what happened. It exists so that declining is distinguishable from a caller that
+    was never able to choose — that one still gets the refusal and the candidate list.
+    """
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -214,7 +228,11 @@ def _root_finding(label: str, root: Path) -> tuple[bool, str]:
 
 
 def _cmd_add(config: Config, args: argparse.Namespace) -> ExitCode:
-    entry = _resolve_query(config, args)
+    try:
+        entry = _resolve_query(config, args, choose=_ask_which_company)
+    except _Cancelled:
+        print("cancelled: nothing was added")
+        return ExitCode.CLEAN
     watch_list = WatchList.load(config.watch_list_path)
     if not watch_list.add(entry):
         print(f"already watched: {entry.cvm_code}  {entry.legal_name}")
@@ -334,10 +352,17 @@ def _cmd_status(config: Config, args: argparse.Namespace) -> ExitCode:
 # --- Query plumbing shared by add, resolve and rm. ---
 
 
-def _resolve_query(config: Config, args: argparse.Namespace) -> WatchedCompany:
+def _resolve_query(
+    config: Config, args: argparse.Namespace, *, choose: Chooser | None = None
+) -> WatchedCompany:
     """Resolve the query against the registry, honoring the flag the human typed it under."""
     query, kinds = _typed_query(args)
-    entry = resolve(_registry(config), query, overrides=config.prefix_overrides)
+    entry = resolve(
+        _registry(config),
+        query,
+        overrides=config.prefix_overrides,
+        choose=choose if _has_a_human() else None,
+    )
     if kinds is not None and entry.matched_by not in kinds:
         raise CompanyError(
             f"{query!r} did not match as typed: it was found by {entry.matched_by}, "
@@ -345,6 +370,47 @@ def _resolve_query(config: Config, args: argparse.Namespace) -> WatchedCompany:
             f"({entry.cvm_code}  {entry.legal_name})"
         )
     return entry
+
+
+def _ask_which_company(query: str, result: SearchResult) -> RegistryRecord:
+    """Number the candidates and let the human settle it. Cancelling is one of the answers.
+
+    Only reachable with a terminal on both ends, so it may read from stdin and loop until the
+    answer is one of the offered numbers. A typo is re-asked rather than resolved generously:
+    the whole point of asking is that guessing here registers the wrong company.
+    """
+    candidates = result.matches
+    print(f"{query!r} matches {len(candidates)} companies by {result.kind}:\n")
+    width = len(str(len(candidates)))
+    for number, record in enumerate(candidates, start=1):
+        print(f"  {number:>{width}}  {describe(record)}")
+    print()
+
+    while True:
+        try:
+            answer = input(f"choose 1-{len(candidates)}, or Enter to cancel: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            raise _Cancelled from None
+        if not answer:
+            raise _Cancelled
+        if answer.isdigit() and 1 <= int(answer) <= len(candidates):
+            return candidates[int(answer) - 1]
+        print(f"  {answer!r} is not one of the choices")
+
+
+def _has_a_human() -> bool:
+    """Whether there is somebody at the other end to answer a question.
+
+    Both streams, because the prompt is only useful if it can be both read and answered: a
+    ``co-docs-watcher add ... | tee log`` still has a terminal on stdin, and a prompt nobody
+    sees is a command that hangs. Cron and pipelines get the refusal instead, which is the
+    behaviour every non-interactive caller already relies on.
+    """
+    try:
+        return sys.stdin is not None and sys.stdin.isatty() and sys.stdout.isatty()
+    except ValueError:  # a closed stream — no terminal, by any definition
+        return False
 
 
 def _typed_query(args: argparse.Namespace) -> tuple[str, tuple[MatchKind, ...] | None]:

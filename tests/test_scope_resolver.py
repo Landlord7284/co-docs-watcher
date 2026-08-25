@@ -1,11 +1,11 @@
-"""Resolving a query into a watch list entry, and the two refusals."""
+"""Resolving a query into a watch list entry, the two refusals, and the chooser."""
 
 from __future__ import annotations
 
 import pytest
 
-from co_docs_watcher.cvm.registry import Registry, parse_package
-from co_docs_watcher.cvm.search import MatchKind
+from co_docs_watcher.cvm.registry import Registry, RegistryRecord, parse_package
+from co_docs_watcher.cvm.search import MatchKind, SearchResult
 from co_docs_watcher.cvm.ticker import PrefixSource
 from co_docs_watcher.errors import AmbiguousQueryError, CompanyError
 from co_docs_watcher.scope.resolver import resolve
@@ -51,6 +51,27 @@ def test_an_ambiguous_query_is_handed_back_with_its_candidates() -> None:
     assert len(raised.value.candidates) == 2
     assert any("ENERGISA S.A." in candidate for candidate in raised.value.candidates)
     assert any("014605" in candidate for candidate in raised.value.candidates)
+
+
+def test_a_chooser_settles_an_ambiguous_query() -> None:
+    ambiguous = registry(general=[*fca.GENERAL_ROWS, ENERGISA_MT])
+    seen: list[tuple[str, int]] = []
+
+    def choose(query: str, result: SearchResult) -> RegistryRecord:
+        seen.append((query, len(result.matches)))
+        return result.matches[-1]
+
+    entry = resolve(ambiguous, "energisa", choose=choose)
+
+    assert seen == [("energisa", 2)]
+    assert entry.cvm_code == "014605"
+
+
+def test_a_chooser_is_never_asked_about_an_unambiguous_query() -> None:
+    def choose(query: str, result: SearchResult) -> RegistryRecord:
+        raise AssertionError("nothing to choose between")
+
+    assert resolve(registry(), "PETR4", choose=choose).cvm_code == "009512"
 
 
 def test_a_query_that_matches_nothing_says_what_would_work() -> None:

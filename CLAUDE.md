@@ -209,7 +209,7 @@ companies:
     legal_name: PETROLEO BRASILEIRO S.A. PETROBRAS
 ```
 
-`prefix_source` and `matched_by` are recorded because months later "why is this folder called `009512`?" and "why is this company here at all?" must be answerable without re-running anything. Entries are **appended, never sorted** — the order of the file is the human's. An entry that fails to parse aborts the load instead of being skipped: an entry dropped in silence is a company that stops being monitored in silence. `add` refuses ambiguous queries and hands back the candidates rather than choosing.
+`prefix_source` and `matched_by` are recorded because months later "why is this folder called `009512`?" and "why is this company here at all?" must be answerable without re-running anything. Entries are **appended, never sorted** — the order of the file is the human's. An entry that fails to parse aborts the load instead of being skipped: an entry dropped in silence is a company that stops being monitored in silence. `add` never chooses between candidates itself: with a terminal on both stdin and stdout it numbers them and asks which one, and an empty answer cancels without writing; with either stream redirected there is nobody to answer, so the query is refused and the candidates are handed back. The prompt lives in `cli.py` alone — the resolver takes a `Chooser` and nothing below the CLI ever reads from stdin.
 
 ## Document identity and states
 
