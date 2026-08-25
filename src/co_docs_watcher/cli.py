@@ -1,0 +1,381 @@
+"""The command-line surface: subcommands, flags, and the exit-code contract.
+
+The canonical mode is one-shot: ``run`` does one complete pass and exits. There is no daemon
+in the package — a periodic mode, if it ever exists, is built on top of the one-shot, outside
+of it. Everything here is glue: parsing flags, loading the configuration, and translating the
+exception hierarchy into the documented exit codes. Decisions live in the modules the
+subcommands call.
+
+``--config`` is accepted before or after the subcommand, because both spellings are natural
+and refusing one of them is a papercut nobody needs. Every flag whose destination differs
+from its option string carries an explicit ``metavar`` — without one, ``argparse`` leaks the
+internal attribute name into the help text.
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+from collections.abc import Sequence
+from pathlib import Path
+
+from co_docs_watcher import __version__
+from co_docs_watcher.clock import Clock
+from co_docs_watcher.config import Config, load_config
+from co_docs_watcher.cvm.cache import RegistryCache
+from co_docs_watcher.cvm.registry import Registry
+from co_docs_watcher.cvm.search import MatchKind
+from co_docs_watcher.errors import (
+    AmbiguousQueryError,
+    CaptchaRequiredError,
+    CompanyError,
+    ConfigError,
+    ExitCode,
+    SourceError,
+    WatcherError,
+    exit_code_for,
+)
+from co_docs_watcher.lock import RunLock
+from co_docs_watcher.logging_setup import configure_logging
+from co_docs_watcher.manifest.db import open_manifest
+from co_docs_watcher.manifest.repo import Manifest
+from co_docs_watcher.models import LocalState
+from co_docs_watcher.pipeline import purge, reconcile, regenerate
+from co_docs_watcher.run import execute_run, probe_source
+from co_docs_watcher.scope.models import WatchedCompany
+from co_docs_watcher.scope.resolver import resolve
+from co_docs_watcher.scope.store import WatchList
+from co_docs_watcher.text import normalize_cvm_code, normalize_key
+
+__all__ = ["build_parser", "main"]
+
+logger = logging.getLogger(__name__)
+
+#: The typed query flags of ``add`` and ``resolve``, and the match stages each one accepts.
+#: A value found by a different stage than the flag named is a wrong company that happens to
+#: exist, which is the worst kind of success.
+_QUERY_FLAGS: tuple[tuple[str, tuple[MatchKind, ...]], ...] = (
+    ("ticker", (MatchKind.TICKER,)),
+    ("cvm_code", (MatchKind.CVM_CODE,)),
+    ("cnpj", (MatchKind.CNPJ,)),
+    ("name", (MatchKind.LEGAL_NAME, MatchKind.PREVIOUS_LEGAL_NAME)),
+)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Parse, dispatch, and map whatever went wrong to the documented exit code."""
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        config = load_config(args.config)
+    except ConfigError as error:
+        # Logging is configured after the config loads (it needs the timezone), so this one
+        # failure mode speaks plainly to stderr instead.
+        print(f"error: {error}", file=sys.stderr)
+        return int(ExitCode.INVALID_CONFIG)
+
+    configure_logging()
+    try:
+        return int(args.handler(config, args))
+    except AmbiguousQueryError as error:
+        logger.error("%s", error)
+        for candidate in error.candidates:
+            print(f"  {candidate}", file=sys.stderr)
+        return int(exit_code_for(error))
+    except WatcherError as error:
+        logger.log(error.severity, "%s", error)
+        return int(exit_code_for(error))
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="co-docs-watcher",
+        description="Reading queue for documents published on RAD/CVM by watched companies.",
+    )
+    parser.add_argument("--version", action="version", version=__version__)
+    _config_flag(parser, default=None)
+    commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
+
+    doctor = _command(commands, "doctor", _cmd_doctor, "check config, roots, timezone, source")
+    del doctor
+
+    add = _command(commands, "add", _cmd_add, "resolve a company and add it to the watch list")
+    _query_arguments(add)
+
+    listing = _command(commands, "list", _cmd_list, "show the watch list")
+    listing.add_argument(
+        "query", nargs="?", metavar="QUERY", help="narrow by prefix, CVM code, or name"
+    )
+
+    rm = _command(commands, "rm", _cmd_rm, "remove a company from the watch list")
+    rm.add_argument("query", metavar="QUERY", help="prefix, CVM code, or part of the name")
+
+    resolve_ = _command(
+        commands, "resolve", _cmd_resolve, "show what `add` would write, without writing"
+    )
+    _query_arguments(resolve_)
+
+    _command(commands, "run", _cmd_run, "one complete pass: the canonical mode")
+    _command(commands, "reconcile", _cmd_reconcile, "repair what an interrupted run left")
+    _command(commands, "purge", _cmd_purge, "delete what aged out of the window")
+    _command(commands, "status", _cmd_status, "what the archive holds, without touching it")
+    return parser
+
+
+def _command(commands, name: str, handler, help_text: str) -> argparse.ArgumentParser:
+    subparser = commands.add_parser(name, help=help_text, description=help_text)
+    # SUPPRESS keeps a trailing `--config` from erasing one given before the subcommand.
+    _config_flag(subparser, default=argparse.SUPPRESS)
+    subparser.set_defaults(handler=handler)
+    return subparser
+
+
+def _config_flag(parser: argparse.ArgumentParser, *, default: object) -> None:
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=default,
+        metavar="PATH",
+        help="configuration file; also $CO_WATCHER_CONFIG",
+    )
+
+
+def _query_arguments(parser: argparse.ArgumentParser) -> None:
+    """One query, spelled either as a bare positional or as a typed flag."""
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument(
+        "query",
+        nargs="?",
+        metavar="QUERY",
+        help="ticker, CNPJ, CVM code, or part of a legal name",
+    )
+    group.add_argument("--ticker", metavar="TICKER", help="a trading code or its root")
+    group.add_argument("--cvm-code", metavar="CODE", help="the numeric CVM code")
+    group.add_argument("--cnpj", metavar="CNPJ", help="the CNPJ, punctuated or not")
+    group.add_argument("--name", metavar="TEXT", help="part of the legal name, current or previous")
+
+
+# --- Subcommand handlers. Each returns the exit code; errors travel as exceptions. ---
+
+
+def _cmd_doctor(config: Config, args: argparse.Namespace) -> ExitCode:
+    """Check everything a run depends on, and say what was found — all of it, always."""
+    findings: list[tuple[bool, str]] = []
+    origin = config.origin if config.origin is not None else "built-in defaults (warned above)"
+    findings.append((True, f"config: {origin}"))
+    findings.append(_root_finding("data root", config.data_root))
+    findings.append(_root_finding("documents root", config.documents_root))
+    findings.append((True, f"timezone: {config.timezone_name}"))
+
+    try:
+        companies = WatchList.load(config.watch_list_path).companies
+    except WatcherError as error:
+        findings.append((False, f"watch list: {error}"))
+    else:
+        findings.append((True, f"watch list: {len(companies)} company(ies)"))
+
+    now = Clock.installed().now()
+    cache = RegistryCache(config.registry_cache_root, max_age_days=config.registry_max_age_days)
+    ages = ", ".join(
+        f"{year} {'fresh' if cache.is_fresh(year, now=now) else 'stale or absent'}"
+        for year in (now.year - 1, now.year)
+    )
+    findings.append((True, f"registry cache: {ages} (refreshed by `run` and `add`)"))
+
+    captcha = False
+    try:
+        findings.append((True, f"source: {probe_source(config)}"))
+    except CaptchaRequiredError as error:
+        captcha = True
+        findings.append((False, f"source: demanded a captcha ({error}); reduce frequency"))
+    except (SourceError, OSError) as error:
+        findings.append((False, f"source: {error}"))
+
+    for good, finding in findings:
+        print(f"{'ok  ' if good else 'FAIL'}  {finding}")
+    if captcha:
+        return ExitCode.CAPTCHA_REQUIRED
+    if all(good for good, _ in findings):
+        return ExitCode.CLEAN
+    return ExitCode.PARTIAL_FAILURE
+
+
+def _root_finding(label: str, root: Path) -> tuple[bool, str]:
+    """A root exists (or is created now) and accepts a write. Probing is the only real test."""
+    probe = root / ".doctor-probe"
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        probe.write_bytes(b"")
+        probe.unlink()
+    except OSError as error:
+        return False, f"{label}: {root} is not writable: {error}"
+    return True, f"{label}: {root} (writable)"
+
+
+def _cmd_add(config: Config, args: argparse.Namespace) -> ExitCode:
+    entry = _resolve_query(config, args)
+    watch_list = WatchList.load(config.watch_list_path)
+    if not watch_list.add(entry):
+        print(f"already watched: {entry.cvm_code}  {entry.legal_name}")
+        return ExitCode.CLEAN
+    watch_list.save()
+    print(f"added: {entry.cvm_code}  {entry.legal_name}  -> {entry.prefix}/")
+    return ExitCode.CLEAN
+
+
+def _cmd_resolve(config: Config, args: argparse.Namespace) -> ExitCode:
+    entry = _resolve_query(config, args)
+    for key, value in entry.to_mapping().items():
+        print(f"{key}: {value}")
+    return ExitCode.CLEAN
+
+
+def _cmd_list(config: Config, args: argparse.Namespace) -> ExitCode:
+    companies = WatchList.load(config.watch_list_path).companies
+    if args.query:
+        companies = tuple(_watch_list_matches(companies, args.query))
+    if not companies:
+        print("the watch list is empty" if not args.query else "nothing matches")
+        return ExitCode.CLEAN
+    for company in companies:
+        print(f"{company.cvm_code}  {company.prefix:<12}  {company.legal_name}")
+    return ExitCode.CLEAN
+
+
+def _cmd_rm(config: Config, args: argparse.Namespace) -> ExitCode:
+    watch_list = WatchList.load(config.watch_list_path)
+    matches = _watch_list_matches(watch_list.companies, args.query)
+    if not matches:
+        raise CompanyError(f"nothing in the watch list matches {args.query!r}")
+    if len(matches) > 1:
+        raise AmbiguousQueryError(
+            f"{args.query!r} matches {len(matches)} watched companies; "
+            "narrow it down with the CVM code",
+            candidates=[
+                f"{company.cvm_code}  {company.prefix}  {company.legal_name}"
+                for company in matches
+            ],
+        )
+    removed = watch_list.remove(matches[0].cvm_code)
+    watch_list.save()
+    assert removed is not None
+    print(f"removed: {removed.cvm_code}  {removed.legal_name}")
+    return ExitCode.CLEAN
+
+
+def _cmd_run(config: Config, args: argparse.Namespace) -> ExitCode:
+    return execute_run(config).exit_code
+
+
+def _cmd_reconcile(config: Config, args: argparse.Namespace) -> ExitCode:
+    with RunLock(config.lock_path):
+        connection = open_manifest(config.manifest_path)
+        try:
+            manifest = Manifest.over(connection)
+            outcome = reconcile(
+                manifest,
+                documents_root=config.documents_root,
+                staging_root=config.staging_root,
+            )
+            window = Clock.installed().window(config.retention_days)
+            regenerate(manifest, inbox_root=config.inbox_root, window=window)
+        finally:
+            connection.close()
+    return ExitCode.PARTIAL_FAILURE if outcome.failed else ExitCode.CLEAN
+
+
+def _cmd_purge(config: Config, args: argparse.Namespace) -> ExitCode:
+    with RunLock(config.lock_path):
+        connection = open_manifest(config.manifest_path)
+        try:
+            manifest = Manifest.over(connection)
+            window = Clock.installed().window(config.retention_days)
+            purge(
+                manifest,
+                documents_root=config.documents_root,
+                inbox_root=config.inbox_root,
+                window=window,
+            )
+            regenerate(manifest, inbox_root=config.inbox_root, window=window)
+        finally:
+            connection.close()
+    return ExitCode.CLEAN
+
+
+def _cmd_status(config: Config, args: argparse.Namespace) -> ExitCode:
+    print(f"config: {config.origin if config.origin is not None else 'built-in defaults'}")
+    print(f"data root: {config.data_root}")
+    print(f"documents root: {config.documents_root}")
+    print(f"timezone: {config.timezone_name}")
+    window = Clock.installed().window(config.retention_days)
+    print(f"window: {window.first} .. {window.last} ({window.days} dates)")
+    print(f"watched companies: {len(WatchList.load(config.watch_list_path).companies)}")
+
+    if not config.manifest_path.exists():
+        print("manifest: none yet — no run has completed")
+        return ExitCode.CLEAN
+    connection = open_manifest(config.manifest_path)
+    try:
+        manifest = Manifest.over(connection)
+        counts = {state: len(manifest.documents.in_state(state)) for state in LocalState}
+        total = sum(counts.values())
+        states = ", ".join(
+            f"{count} {state}" for state, count in counts.items() if count
+        )
+        print(f"documents: {total}" + (f" ({states})" if states else ""))
+        watermark = manifest.state.watermark()
+        print(f"last completed sweep: {watermark if watermark is not None else 'never'}")
+    finally:
+        connection.close()
+    return ExitCode.CLEAN
+
+
+# --- Query plumbing shared by add, resolve and rm. ---
+
+
+def _resolve_query(config: Config, args: argparse.Namespace) -> WatchedCompany:
+    """Resolve the query against the registry, honoring the flag the human typed it under."""
+    query, kinds = _typed_query(args)
+    entry = resolve(_registry(config), query, overrides=config.prefix_overrides)
+    if kinds is not None and entry.matched_by not in kinds:
+        raise CompanyError(
+            f"{query!r} did not match as typed: it was found by {entry.matched_by}, "
+            f"not by {' or '.join(str(kind) for kind in kinds)} "
+            f"({entry.cvm_code}  {entry.legal_name})"
+        )
+    return entry
+
+
+def _typed_query(args: argparse.Namespace) -> tuple[str, tuple[MatchKind, ...] | None]:
+    for attribute, kinds in _QUERY_FLAGS:
+        value = getattr(args, attribute)
+        if value:
+            return value, kinds
+    return args.query, None
+
+
+def _registry(config: Config) -> Registry:
+    """The merged registry, refreshed if stale. Failure here blocks `add` and only `add`."""
+    cache = RegistryCache(config.registry_cache_root, max_age_days=config.registry_max_age_days)
+    return cache.load(now=Clock.installed().now())
+
+
+def _watch_list_matches(
+    companies: Sequence[WatchedCompany], query: str
+) -> list[WatchedCompany]:
+    """Match a query against what is *watched* — prefix, CVM code, or legal-name substring.
+
+    ``rm`` and ``list`` resolve against the watch list rather than the registry: what is being
+    named is an entry this archive already has, and the registry may not even be cached.
+    """
+    code = normalize_cvm_code(query)
+    key = normalize_key(query)
+    prefix = query.strip().upper()
+    return [
+        company
+        for company in companies
+        if company.prefix.upper() == prefix
+        or (code and company.cvm_code == code)
+        or (key and key in normalize_key(company.legal_name))
+    ]
