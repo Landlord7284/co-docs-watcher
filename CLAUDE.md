@@ -10,7 +10,7 @@ The product is a **reading queue for people**. Success is measured by opening th
 
 Out of scope: parsing document content, long-term preservation, and any heuristic correlation between versions — the source provides supersession ready-made.
 
-The repository currently contains the accepted architecture; the code described below is the Phase 0 design to be implemented.
+The repository contains the Phase 0 implementation of the architecture described below.
 
 ## Documentation
 
@@ -77,6 +77,7 @@ Config discovery chain, in order: `--config` → `$CO_WATCHER_CONFIG` → `./con
 | `source.timezone` | `America/Sao_Paulo` | anchors dates, directory names, and log timestamps |
 | `source.min_request_interval` | `5.0` | seconds between requests; the backend is fragile |
 | `source.max_requests_per_run` | `200` | safety fuse for a single run |
+| `source.base_url` | `https://www.rad.cvm.gov.br/ENETWeb/` | overridden only to point a test server or a mirror |
 
 `[prefix_overrides]` is a section of its own, keyed by CVM code — `"003549" = "SCHLOSSER"` — and settles a folder name the resolver got typographically right and humanly wrong. Its keys are data rather than schema: this is the single place where an unknown key is not a typo. Values are validated, never sanitized, because an override is a deliberate act and repairing one quietly would name a folder after something nobody wrote.
 
