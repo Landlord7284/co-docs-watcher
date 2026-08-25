@@ -73,9 +73,12 @@ Config discovery chain, in order: `--config` → `$CO_WATCHER_CONFIG` → `./con
 | `paths.data_root` | `./var/data` (fallback only) | private root: YAML, manifest, lock, FCA cache |
 | `paths.documents_root` | `./var/documents` (fallback only) | the shareable archive, and `.tmp/` |
 | `retention.days` | `7` | `N`, retained dates **including today** |
+| `registry.max_age_days` | `7` | days a cached FCA package is used without re-downloading |
 | `source.timezone` | `America/Sao_Paulo` | anchors dates, directory names, and log timestamps |
 | `source.min_request_interval` | `5.0` | seconds between requests; the backend is fragile |
 | `source.max_requests_per_run` | `200` | safety fuse for a single run |
+
+`[prefix_overrides]` is a section of its own, keyed by CVM code — `"003549" = "SCHLOSSER"` — and settles a folder name the resolver got typographically right and humanly wrong. Its keys are data rather than schema: this is the single place where an unknown key is not a typo. Values are validated, never sanitized, because an override is a deliberate act and repairing one quietly would name a folder after something nobody wrote.
 
 ## Architecture
 
@@ -92,8 +95,12 @@ src/co_docs_watcher/
 ├── models.py         the neutral core: SourceDocument, LocalState, Delivery
 ├── run.py            orchestration of one run
 ├── source.py         the Source protocol the pipeline depends on
-├── text.py
-├── cvm/              FCA registry: download, cache, search, ticker
+├── text.py           identifier normalization and folder-safe names
+├── cvm/              FCA registry: who the companies are, independently of what they publish
+│   ├── registry.py   records, package parsing, the 1:1 guard
+│   ├── cache.py      yearly packages, staleness, refresh that cannot poison the cache
+│   ├── search.py     ticker -> CNPJ -> CD_CVM -> legal name
+│   └── ticker.py     the root rule and the fallback chain
 ├── rad/              the source — nothing outside imports from here
 │   ├── client.py     POST, backoff, temErro translation
 │   ├── listing.py    window sweep -> list[SourceDocument]
@@ -101,7 +108,10 @@ src/co_docs_watcher/
 │   ├── download.py   GET, content sniffing, ZIP extraction
 │   └── vocabulary.py category table copied from cboDocumentos
 ├── manifest/         db.py (connection, pragmas, migrations) + repo.py (repositories)
-├── scope/            companies.yaml, models, resolver
+├── scope/            the watch list: which companies this archive is about
+│   ├── models.py     what an entry stores, and why it stores it
+│   ├── store.py      round-trip YAML, hash guard, atomic rewrite
+│   └── resolver.py   a query -> an entry
 └── pipeline/         discover, fetch, reconcile, purge, inbox
 ```
 
@@ -162,7 +172,7 @@ Folders are named by the ticker root from the FCA registry, with fallbacks. The 
 ^([A-Z][A-Z0-9]{3,})(\d{1,2}[A-Z]?)$
 ```
 
-Group 1 is the root: `PETR4 → PETR`, `POMO3/POMO4 → POMO`, `EQMA3B → EQMA`, `B3SA3 → B3SA`. When a company has more than one root (typically subscription-receipt pairs like `ENGI`/`ENGI1`), **the shorter root wins**; remaining ties break alphabetically and can be overridden in the config file. Measured on the 2026 FCA: zero root collisions between companies, and `CNPJ → CD_CVM` is strictly 1:1.
+Group 1 is the root: `PETR4 → PETR`, `POMO3/POMO4 → POMO`, `EQMA3B → EQMA`, `B3SA3 → B3SA`. When a company has more than one root (typically subscription-receipt pairs like `ENGI`/`ENGI1`), **the shorter root wins**; remaining ties break alphabetically and can be overridden in `[prefix_overrides]`. Measured on the 2026 FCA (2026-08-24): 346 of 675 companies carry at least one valid root, 12 carry more than one, and after the tie-break there are **zero root collisions** between companies; `CNPJ → CD_CVM` is strictly 1:1 in both directions.
 
 `Codigo_Negociacao` is free text and must be distrusted: dozens of companies fill it with junk (`'NÃO HÁ'`, `'B3'`, bare numbers). The resolver **validates the root against the rule above** and falls back when it fails. Legitimate class-digit-less codes matching `^[A-Z]{4,5}$` (e.g. `LMED`, `TEGA`) already *are* the root and are accepted as such.
 
@@ -170,7 +180,32 @@ Fallback chain: **1)** validated ticker root (`PETR`) → **2)** reduced, saniti
 
 The folder name is a **snapshot, not identity**: a folder once created is never renamed. Identity lives in the manifest and in `(id, version)` inside the file name. If a company lists on the exchange after monitoring began, older days stay under the old name — that is correct, not a bug.
 
-Registry search resolves **ticker → CNPJ → CD_CVM**, with fallback to a numeric CVM code and to a normalized substring of `Nome_Empresarial` **and** `Nome_Empresarial_Anterior` — the previous legal name matters more than it seems: half the companies have one.
+Registry search resolves **ticker → CNPJ → CD_CVM**, with fallback to a numeric CVM code and to a normalized substring of `Nome_Empresarial` **and** `Nome_Empresarial_Anterior` — the previous legal name matters more than it seems: 495 of the 675 companies in the 2026 FCA have one (2026-08-24).
+
+### The registry (condensed contract)
+
+The FCA (*Formulário Cadastral*) is the annual registration form, published as CVM open data at `https://dados.cvm.gov.br/dados/CIA_ABERTA/DOC/FCA/DADOS/fca_cia_aberta_{year}.zip` — public, unauthenticated, one ZIP per year of ISO-8859-1 CSVs delimited by `;`. Measured 2026-08-24: the 2026 package is 359 387 bytes and holds 675 companies.
+
+- **Two members are read**: `fca_cia_aberta_geral_{year}.csv` for identity (`CNPJ_Companhia`, `Codigo_CVM`, `Nome_Empresarial`, `Nome_Empresarial_Anterior`, `Situacao_Registro_CVM`) and `fca_cia_aberta_valor_mobiliario_{year}.csv` for trading codes. A missing member or a missing column aborts the parse: an empty registry is indistinguishable from a company that is not listed.
+- **Two years are always read**, the previous one as the base and the current one on top. The yearly package holds only companies that filed *that* year, so in February the current year alone would be a registry of a few dozen companies. A year not published yet (every January) is expected, not a failure.
+- **The latest version per company is re-derived** from `(Versao, ID_Documento)`, and trading codes are joined on the selected version's `ID_Documento`. The published general member already arrives reduced to one row per company — a promise nobody made, so it is not relied on.
+- **Only codes with an empty `Data_Fim_Negociacao` are active** (55 of 963 rows carried an end date on 2026-08-24). `Codigo_Negociacao` is free text: it arrives in lower case (`tgma3`), as junk (`B3`, `NÃO HÁ`, bare numbers), or empty for debentures and commercial notes.
+- **The cache is under `data_root/cvm-cache/`**, one file per year, refreshed only when older than `registry.max_age_days`. A download that fails, arrives corrupt, or exceeds the size cap **never replaces the cached snapshot**: the previous one stays and the run continues on it, loudly. Only the absence of any usable snapshot raises — and that blocks `add`, never `run`.
+
+### The watch list
+
+`data_root/companies.yaml` is a file the operator owns; the watcher appends to it and removes from it, and never reorganizes it. One key, `companies`, holding one entry per company:
+
+```yaml
+companies:
+  - cvm_code: '009512'      # what the sweep is filtered against
+    prefix: PETR            # the folder name — a snapshot, never renamed
+    prefix_source: ticker   # override | ticker | legal_name | cvm_code
+    matched_by: ticker      # ticker | cnpj | cvm_code | legal_name | previous_legal_name
+    legal_name: PETROLEO BRASILEIRO S.A. PETROBRAS
+```
+
+`prefix_source` and `matched_by` are recorded because months later "why is this folder called `009512`?" and "why is this company here at all?" must be answerable without re-running anything. Entries are **appended, never sorted** — the order of the file is the human's. An entry that fails to parse aborts the load instead of being skipped: an entry dropped in silence is a company that stops being monitored in silence. `add` refuses ambiguous queries and hands back the candidates rather than choosing.
 
 ## Document identity and states
 

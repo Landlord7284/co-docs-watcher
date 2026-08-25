@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -32,11 +33,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from co_docs_watcher.clock import install_source_timezone
 from co_docs_watcher.errors import ConfigError
+from co_docs_watcher.text import normalize_cvm_code
 
 __all__ = [
     "CONFIG_ENV_VAR",
     "DEFAULT_MAX_REQUESTS_PER_RUN",
     "DEFAULT_MIN_REQUEST_INTERVAL",
+    "DEFAULT_REGISTRY_MAX_AGE_DAYS",
     "DEFAULT_RETENTION_DAYS",
     "DEFAULT_TIMEZONE",
     "Config",
@@ -60,13 +63,25 @@ DEFAULT_MIN_REQUEST_INTERVAL = 5.0
 #: Safety fuse: a single run never issues more requests than this, whatever it still has to do.
 DEFAULT_MAX_REQUESTS_PER_RUN = 200
 
+#: Days a cached FCA package is considered current. The registry only moves when a company
+#: files a registration form, so a week-old snapshot names companies exactly as today's does.
+DEFAULT_REGISTRY_MAX_AGE_DAYS = 7
+
 #: Relative and deliberately unusable-by-accident: reaching these means the warning fired.
 DEFAULT_DATA_ROOT = Path("var/data")
 DEFAULT_DOCUMENTS_ROOT = Path("var/documents")
 
+#: Folder-name overrides, keyed by CVM code. The keys are data, not schema, so this section is
+#: the one place where an unknown key is not a typo.
+PREFIX_OVERRIDES_SECTION = "prefix_overrides"
+
+#: What an override may look like: a folder name, in the same charset the resolver produces.
+_PREFIX_RULE = re.compile(r"^[A-Z0-9][A-Z0-9-]{0,31}$")
+
 _SCHEMA: dict[str, set[str]] = {
     "paths": {"data_root", "documents_root"},
     "retention": {"days"},
+    "registry": {"max_age_days"},
     "source": {"timezone", "min_request_interval", "max_requests_per_run"},
 }
 
@@ -90,6 +105,8 @@ class Config:
     retention_days: int
     min_request_interval: float
     max_requests_per_run: int
+    registry_max_age_days: int
+    prefix_overrides: Mapping[str, str]
     origin: Path | None
 
     @property
@@ -107,6 +124,10 @@ class Config:
     @property
     def manifest_path(self) -> Path:
         return self.data_root / "manifest.sqlite"
+
+    @property
+    def registry_cache_root(self) -> Path:
+        return self.data_root / "cvm-cache"
 
     @property
     def staging_root(self) -> Path:
@@ -177,6 +198,8 @@ def load_config(
             retention_days=DEFAULT_RETENTION_DAYS,
             min_request_interval=DEFAULT_MIN_REQUEST_INTERVAL,
             max_requests_per_run=DEFAULT_MAX_REQUESTS_PER_RUN,
+            registry_max_age_days=DEFAULT_REGISTRY_MAX_AGE_DAYS,
+            prefix_overrides={},
             origin=None,
         )
         return _installed(defaults)
@@ -210,6 +233,7 @@ def _from_file(path: Path) -> Config:
     _reject_unknown_keys(raw, path)
     paths = _section(raw, "paths", path)
     retention = _section(raw, "retention", path)
+    registry = _section(raw, "registry", path)
     source = _section(raw, "source", path)
 
     return Config(
@@ -227,12 +251,22 @@ def _from_file(path: Path) -> Config:
         max_requests_per_run=_positive_int(
             source, "max_requests_per_run", DEFAULT_MAX_REQUESTS_PER_RUN, where="source", path=path
         ),
+        registry_max_age_days=_positive_int(
+            registry,
+            "max_age_days",
+            DEFAULT_REGISTRY_MAX_AGE_DAYS,
+            where="registry",
+            path=path,
+        ),
+        prefix_overrides=_prefix_overrides(
+            _section(raw, PREFIX_OVERRIDES_SECTION, path), path=path
+        ),
         origin=path,
     )
 
 
 def _reject_unknown_keys(raw: Mapping[str, Any], path: Path) -> None:
-    unknown_sections = sorted(set(raw) - set(_SCHEMA))
+    unknown_sections = sorted(set(raw) - set(_SCHEMA) - {PREFIX_OVERRIDES_SECTION})
     if unknown_sections:
         raise ConfigError(f"{path}: unknown section(s): {', '.join(unknown_sections)}")
     for name, allowed in _SCHEMA.items():
@@ -244,6 +278,29 @@ def _reject_unknown_keys(raw: Mapping[str, Any], path: Path) -> None:
         unknown = sorted(set(section) - allowed)
         if unknown:
             raise ConfigError(f"{path}: unknown key(s) in [{name}]: {', '.join(unknown)}")
+
+
+def _prefix_overrides(section: Mapping[str, Any], *, path: Path) -> dict[str, str]:
+    """Read the folder-name overrides, keyed by CVM code.
+
+    Validated rather than sanitized: an override is a deliberate act, and quietly repairing a
+    malformed one would name a folder after something the operator did not write.
+    """
+    overrides: dict[str, str] = {}
+    for key, value in section.items():
+        code = normalize_cvm_code(str(key))
+        if not code or len(code) > 6:
+            raise ConfigError(
+                f"{path}: [{PREFIX_OVERRIDES_SECTION}] {key!r} is not a CVM code; the keys of "
+                "this section are the companies the override applies to"
+            )
+        if not isinstance(value, str) or not _PREFIX_RULE.match(value.strip().upper()):
+            raise ConfigError(
+                f"{path}: [{PREFIX_OVERRIDES_SECTION}] {key} must be a folder name of letters, "
+                f"digits and hyphens (got {value!r})"
+            )
+        overrides[code] = value.strip().upper()
+    return overrides
 
 
 def _section(raw: Mapping[str, Any], name: str, path: Path) -> Mapping[str, Any]:
