@@ -11,3 +11,9 @@ var/
 # The local configuration; config.example.toml is the one that is tracked.
 /config.toml
 /co-docs-watcher.toml
+
+# The container configuration; docker/config.example.toml is the one that is tracked.
+/docker/config.toml
+
+# The container environment; .env.example is the one that is tracked.
+/.env

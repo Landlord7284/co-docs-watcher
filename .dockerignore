@@ -1,0 +1,16 @@
+.git
+.github
+.venv
+var
+docs
+tests
+.pytest_cache
+.ruff_cache
+__pycache__
+*.egg-info
+# The local configurations, host and container alike: the container reads the one that is
+# mounted, and baking a copy into the image would archive against paths nobody chose.
+/config.toml
+/co-docs-watcher.toml
+/docker/config.toml
+/.env

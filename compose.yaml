@@ -1,0 +1,35 @@
+# The deployment: one long-running container that schedules itself.
+#
+# No host cron, no `docker exec`, no Docker socket. A scheduler living outside the container
+# has to reach in to run anything, and both ways of reaching in fail quietly: the socket is
+# permissioned by the host and a tightened one turns every scheduled run into a silent
+# `permission denied`, while `docker exec` runs whatever code the *running* container holds
+# — so a pulled image that was never brought up keeps executing the old build indefinitely,
+# with nothing anywhere saying so. A container that schedules itself has one version of the
+# code and one place to read its logs.
+
+services:
+  watcher:
+    build: .
+    image: co-docs-watcher:local
+    # The scheduler is the process worth keeping alive; a run that fails exits on its own and
+    # the next firing is the retry.
+    restart: unless-stopped
+    # A reaper in front of supercronic: the jobs are short-lived children, and a scheduler is
+    # exactly the kind of PID 1 that accumulates zombies without one.
+    init: true
+    env_file: .env
+    volumes:
+      # The configuration the container reads. Its roots are absolute — /data, /documents,
+      # /logs — because relative roots resolve against the directory of the file that names
+      # them, which inside the container is /config.
+      - ./docker/config.toml:/config/config.toml:ro
+      # data_root: private state the watcher reads back — watch list, manifest, lock, FCA
+      # cache. Must be a filesystem local to the host: SQLite locking over SMB/NFS is
+      # unreliable, and this is the mount where that goes wrong first.
+      - ${DATA_ROOT:-./var/data}:/data
+      # documents_root: the archive, which is what gets handed to people — a share, a sync,
+      # a backup. The modes it is created with are declared in [files], not inherited.
+      - ${DOCUMENTS_ROOT:-./var/documents}:/documents
+      # logs_root: what an operator tails when the answer is not in the archive.
+      - ${LOGS_ROOT:-./var/logs}:/logs
