@@ -18,7 +18,7 @@ The repository contains the Phase 0 implementation of the architecture described
 |---|---|
 | `CLAUDE.md` | this file — scope, conventions, architecture, invariants |
 | `docs/fonte-rad.md` | full observed contract of the RAD/ENETWeb source, with measurement dates and payload examples |
-| `USAGE.md` | user-facing command reference, kept in step with the CLI |
+| `USAGE.md` | user-facing command reference and deployment guide, kept in step with the CLI and the container |
 
 Where documentation and code diverge, the code wins and the document is corrected — silent divergence is forbidden. Violating an invariant requires explicit declaration and justification here. Every claim about the source carries the date it was measured: the CVM publishes no API contract, and an undated number ages silently. Re-verify; never trust indefinitely.
 
@@ -88,6 +88,19 @@ Config discovery chain, in order: `--config` → `$CO_WATCHER_CONFIG` → `./con
 | `source.base_url` | `https://www.rad.cvm.gov.br/ENETWeb/` | overridden only to point a test server or a mirror |
 
 `[prefix_overrides]` is a section of its own, keyed by CVM code — `"003549" = "SCHLOSSER"` — and settles a folder name the resolver got typographically right and humanly wrong. Its keys are data rather than schema: this is the single place where an unknown key is not a typo. Values are validated, never sanitized, because an override is a deliberate act and repairing one quietly would name a folder after something nobody wrote.
+
+## Deployment
+
+Unattended operation is a container that schedules itself, and it lives beside the package rather than inside it: `Dockerfile`, `compose.yaml`, `docker/entrypoint.sh`, `docker/run-profile.sh`, `.env.example` and `docker/config.example.toml`. Nothing under `src/` knows any of it exists, and what the scheduler fires is the same one-shot a shell runs.
+
+- **The scheduler is in the image.** `supercronic` — a static binary that runs unprivileged and logs its jobs to stdout — pinned by version and verified by digest, taking a crontab rendered from the environment at every start. No host cron, no `docker exec`, no Docker socket: a scheduler outside the container has to reach in, and both ways of reaching in fail quietly. The socket is permissioned by the host, so a host that tightens it turns every scheduled run into a `permission denied` nobody is watching for; `docker exec` runs the code of the *running* container, so an image pulled but never brought up keeps executing the old build indefinitely. Silent divergence is what this project forbids everywhere else.
+- **Schedules live in the environment, windows live in the configuration file.** They answer different questions — how often to look, and how far back — and a change of cadence must not read like a change of coverage. The crontab carries a profile name and never a number, exactly as the `run` flag does. The cadence shipped is the monitor hourly from 07:00 to 23:00 and the full sweep daily at 05:10: about 41 listing requests a day, which neither the image nor the entrypoint may bring closer to `source.min_request_interval` or `source.max_requests_per_run`.
+- **Exit `3` is mapped to `0` on the scheduled path, and there alone.** A monitor firing while the daily sweep still holds the flock did nothing wrong, and a scheduler that reports it as a failure trains its reader to ignore failures. Every other code passes through — `|| true` would swallow `1`, `2` and `4` with it, and `4` is the one code that must reach whoever watches the container. An ad-hoc `docker compose run --rm watcher …` is not the scheduled path: it reports `3` unchanged, because someone typed it and is owed the truth.
+- **`RUN_ON_START` is the full sweep.** A container start usually follows a restart, an update or downtime — the gap case exactly, which the monitor's two days cannot see. A catch-up that fails is reported and never costs the schedule: a container that refuses to start over one bad run stops monitoring entirely over a source that was briefly down.
+- **`TZ` exists for cron, not for the application.** Every date the watcher writes is anchored on `source.timezone` and is immune to the host zone; the crontab is not, and without `TZ` the container runs UTC and `0 7-23` fires four hours early. An unset `TZ` is warned about at start.
+- **`PUID`/`PGID` are the identity, `[files]` the modes.** The entrypoint drops from root to that identity before anything else runs, so the archive is owned by whoever the share expects rather than by whoever built the image. A mount is never chowned: an ownership that is wrong is a decision the operator has to see. Every variable is defaulted on unset and never on empty, and a container that would schedule nothing refuses to start.
+
+The three roots are mount points, absolute, named by a configuration file of the container's own — a relative root would resolve against the directory of the file naming it, which inside the container is neither the archive nor anything mounted. `data_root` is a mount of its own because SQLite locking over SMB/NFS is unreliable; `documents_root` is the one that goes on the share.
 
 ## Architecture
 
@@ -277,7 +290,7 @@ Violating any of these requires explicit, justified declaration in this document
 - Download state machine `discovered → downloading → available`, with startup reconciliation. Filesystem and SQLite do not form an atomic transaction: idempotency rests on the manifest plus reconciliation, never on file existence.
 - YAML write protection: atomic temp file + `rename`, **and** a hash comparison of the on-disk content against what was loaded before renaming — if it changed, do not overwrite; record a visible conflict and preserve the human's edit. `mtime` is not enough. Comments must survive the rewrite (hence `ruamel.yaml`).
 - Timezone is anchored on the source, never the host or container — for "today", directory names, the retention frontier, the index, the watermark, and **log timestamps** (stdlib `logging` uses libc localtime and would stamp an event under one date while archiving it under another). Installed once at config load; an invalid zone name refuses to start rather than falling back.
-- Portability: nothing depends on Docker, systemd, cron, or any orchestrator. Running once from a shell with a config file must work. No embedded paths, CVM codes, or personal preferences. No credentials — the source is public and unauthenticated.
+- Portability: nothing depends on Docker, systemd, cron, or any orchestrator. Running once from a shell with a config file must work. The container of the Deployment section sits beside the package and never below it: it is one scheduler among the possible ones, and the package neither imports it nor is configured by it. No embedded paths, CVM codes, or personal preferences. No credentials — the source is public and unauthenticated.
 - Logging goes to the streams and to one file, always both: progress on stdout, `WARNING` and above on stderr, and every line of both to `logs_root/co-docs-watcher.log`, rotated by size. The streams are what a supervisor reads while a run happens; the file is what answers a question asked afterwards, which is when the single warning of a long run has already scrolled away. The file never carries less than the streams, so the two never have to be reconciled, and a log file that cannot be opened is reported on stderr and costs the copy, never the run.
 - An isolated failure never kills the batch: a bad company or document is recorded and skipped. Severity ladder: `WARNING` transient and retryable, `ERROR` needs human action, `CRITICAL` the source contract probably changed.
 
@@ -287,9 +300,10 @@ Violating any of these requires explicit, justified declaration in this document
 - **contract** — pins the source wire format against recorded samples; this is what detects the CVM changing something.
 - **integration** — the full flow against a fake server.
 - **live** — marked, deselected by default; re-measures the real source. The numbers in this repository are dated measurements, not permanent truths.
+- **shell** — the container's entrypoint and its exit-code mapping, run against stubbed binaries on `PATH`. Written in POSIX shell so that the contract the image depends on is testable without building an image to reach it.
 
 An architecture test guarantees that nothing outside `rad/` imports `rad/`.
 
 ## Deferred beyond Phase 0
 
-Per-category retention (the FRE is resubmitted several times per quarter at 8 MB each), alerts for publications by unwatched companies (the global sweep already sees them for free), server-side category filtering, and Docker/scheduler packaging — only after the MVP is validated by manual runs.
+Per-category retention (the FRE is resubmitted several times per quarter at 8 MB each), alerts for publications by unwatched companies (the global sweep already sees them for free), and server-side category filtering — only after the MVP is validated by manual runs.

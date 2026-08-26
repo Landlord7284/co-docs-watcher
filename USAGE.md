@@ -6,7 +6,8 @@ deliveries, organizes them by delivery date, and maintains a local reading queue
 
 The canonical mode is **one-shot**: `run` does one complete pass and exits. There is no
 daemon; schedule the one-shot with whatever your platform provides (cron, launchd, a shell
-loop) if you want periodic runs.
+loop) if you want periodic runs. [Deployment](#deployment) below is one such schedule,
+packaged: a container that carries its own.
 
 ```bash
 python -m co_docs_watcher doctor          # check config, roots, timezone, windows, source
@@ -223,3 +224,111 @@ documents_root/
 The inbox index of a day lists what each watched company delivered, with links into the
 archive — and mentions documents that were cancelled at the source or could not be
 downloaded, because silence reads exactly like nothing having been published.
+
+## Deployment
+
+A long-running container that schedules itself. The image is a deployment of the package,
+never a dependency of it: the command it fires is the same one-shot a shell runs, and
+nothing in `src/` knows the container exists.
+
+```bash
+cp .env.example .env                       # schedules, identity, the host paths
+cp docker/config.example.toml docker/config.toml   # windows, retention, modes
+docker compose up -d --build
+```
+
+### The two profiles, and why both
+
+`run` sweeps `discovery.days` (7 by default); `run --monitor` sweeps
+`discovery.monitor_days` (2). They differ in nothing else: the same queue is drained, the
+same retention frontier is purged against, the same indexes are regenerated.
+
+The cadence the environment ships with is the monitor hourly from 07:00 to 23:00 every day,
+and the full sweep once a day at 05:10 — seventeen firings of two listing requests, plus one
+of seven: about **41 listing requests a day**, against a floor of 15 s between requests and a
+per-run fuse of 200.
+
+The daily sweep stays even though the monitor runs seventeen times a day, because frequency
+is not coverage. A 2-day window observes today and yesterday however often it fires. What
+the sweep alone buys is two things: gaps longer than two days — an outage, an update, a NAS
+that was down over a weekend — and the supersessions and cancellations of documents already
+archived, which keep their original delivery date at the source and are therefore visible
+only to a query of the older day. Raising `monitor_days` to 7 instead of keeping the sweep
+would cost about 119 listings a day against 41.
+
+Only the full sweep advances the last-completed-sweep watermark. Turn the sweep off with
+`SWEEP_ENABLED=false` and the staleness warning fires on every run — losing the older days is
+allowed, losing them quietly is not.
+
+### The container shape
+
+`restart: unless-stopped`, `init: true`, and the scheduler inside the image —
+[supercronic](https://github.com/aptible/supercronic), pinned by version and verified by
+digest, rendering its crontab from the environment at every start. So a schedule change is an
+edit to `.env` and a `docker compose up -d`, and nothing else.
+
+No host cron, no `docker exec`, no Docker socket. A scheduler outside the container has to
+reach in, and both ways of reaching in fail quietly: the socket is permissioned by the host,
+and a host that tightens it turns every scheduled run into a `permission denied` nobody is
+watching for; `docker exec` runs whatever code the *running* container holds, so an image
+pulled but never brought up keeps executing the old build indefinitely, with nothing
+anywhere saying so.
+
+Ad-hoc commands are `docker compose run --rm watcher …`, against the same three roots:
+
+```bash
+docker compose run --rm watcher doctor
+docker compose run --rm watcher add --ticker PETR
+docker compose run --rm watcher status
+docker compose run --rm watcher run --monitor
+```
+
+An ad-hoc run that hits the flock and exits `3` is correct behaviour, not a fault: a
+scheduled run was already in flight. The scheduled path maps that one code to `0` — and only
+that one, so `1`, `2` and `4` still reach whoever watches the container.
+
+### The environment
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `TZ` | unset (UTC) | the zone the **crontab** is read in |
+| `MONITOR_SCHEDULE` | `0 7-23 * * *` | when `run --monitor` fires |
+| `MONITOR_ENABLED` | `true` | `false` omits the monitor's crontab line |
+| `SWEEP_SCHEDULE` | `10 5 * * *` | when `run` fires |
+| `SWEEP_ENABLED` | `true` | `false` omits the sweep's line — and leaves the warning firing |
+| `RUN_ON_START` | `sweep` | `sweep`, `monitor` or `none`: what a container start runs |
+| `PUID` / `PGID` | `1000` | the identity the watcher runs as, and owns its files as |
+| `DATA_ROOT` | `./var/data` | host path mounted at `/data` — must be a **local** filesystem |
+| `DOCUMENTS_ROOT` | `./var/documents` | host path mounted at `/documents` — the share |
+| `LOGS_ROOT` | `./var/logs` | host path mounted at `/logs` |
+
+Every variable is defaulted only when **unset**. `SWEEP_ENABLED=` is a line someone wrote on
+purpose, and the container refuses to start rather than read it as `true`. So does a
+container with both profiles disabled, which would schedule nothing at all.
+
+`TZ` exists for cron, not for the application. The watcher anchors every date it writes —
+directory names, the retention frontier, the inbox, the watermark, log timestamps — on
+`source.timezone`, and is immune to the host zone. The crontab is not: **without `TZ` the
+container runs UTC**, and `0 7-23` fires from 04:00 to 20:00 in São Paulo, stopping the
+monitor four hours before the source does. An unset `TZ` is warned about at start.
+
+`RUN_ON_START` is the full sweep because a container start usually follows a restart, an
+update or downtime — the gap case exactly, which the monitor's two days cannot see. A
+catch-up that fails is reported and does not cost the schedule; the next firing is the retry.
+
+`PUID`/`PGID` decide who owns the archive. The modes are declared in `[files]`, so the umask
+of whatever started the container is irrelevant; ownership is not, and it is what decides
+whether the share can read the files at all. The entrypoint drops from root to that identity
+before it does anything else, and never chowns a mount: a mount whose owner is wrong is a
+decision you have to see.
+
+### The configuration inside the container
+
+`docker/config.toml` is a file of its own, separate from the `config.toml` a hand-run uses,
+because the roots differ — inside the container they are the three mount points, and a
+relative root would resolve against `/config`, the directory of the file naming them.
+Everything else is the same file described under [Configuration](#configuration); the
+container is where `[discovery]` and `[files]` earn their keep.
+
+`data_root` must be a filesystem local to the host: it holds the SQLite manifest, and SQLite
+locking over SMB/NFS is unreliable. `documents_root` is the one that belongs on the share.
