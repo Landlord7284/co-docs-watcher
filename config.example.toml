@@ -55,6 +55,15 @@ days = 7
 # are only visible to the full sweep: schedule a daily `run` beside the monitor.
 monitor_days = 2
 
+[files]
+# Creation modes for everything under documents_root: the date and company directories, the
+# documents themselves, the members of a structured package, and the inbox indexes. Declared
+# rather than inherited, because the archive is handed to other people — over a share, a sync,
+# a backup — and the umask of whatever started the process is not an answer to who may read it.
+# Written in octal, the way a mode is read.
+directory_mode = 0o755
+file_mode = 0o644
+
 [registry]
 # Days a cached FCA package is used before it is downloaded again. The registry only moves
 # when a company files a registration form, so a week-old snapshot names companies exactly

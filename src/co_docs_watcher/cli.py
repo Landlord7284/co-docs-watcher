@@ -331,7 +331,12 @@ def _cmd_reconcile(config: Config, args: argparse.Namespace) -> ExitCode:
                 staging_root=config.staging_root,
             )
             window = Clock.installed().window(config.retention_days)
-            regenerate(manifest, inbox_root=config.inbox_root, window=window)
+            regenerate(
+                manifest,
+                inbox_root=config.inbox_root,
+                window=window,
+                modes=config.archive_modes,
+            )
         finally:
             connection.close()
     return ExitCode.PARTIAL_FAILURE if outcome.failed else ExitCode.CLEAN
@@ -349,7 +354,12 @@ def _cmd_purge(config: Config, args: argparse.Namespace) -> ExitCode:
                 inbox_root=config.inbox_root,
                 window=window,
             )
-            regenerate(manifest, inbox_root=config.inbox_root, window=window)
+            regenerate(
+                manifest,
+                inbox_root=config.inbox_root,
+                window=window,
+                modes=config.archive_modes,
+            )
         finally:
             connection.close()
     return ExitCode.CLEAN

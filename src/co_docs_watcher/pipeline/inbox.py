@@ -25,6 +25,12 @@ from datetime import date
 from pathlib import Path
 from urllib.parse import quote
 
+from co_docs_watcher.archive_modes import (
+    DEFAULT_MODES,
+    ArchiveModes,
+    ensure_directory,
+    stamp_file,
+)
 from co_docs_watcher.clock import RetentionWindow, directory_name
 from co_docs_watcher.manifest.repo import DocumentRecord, Manifest
 from co_docs_watcher.models import LocalState
@@ -56,8 +62,19 @@ class InboxOutcome:
     entries: int
 
 
-def regenerate(manifest: Manifest, *, inbox_root: Path, window: RetentionWindow) -> InboxOutcome:
-    """Rewrite the index of every day in the window from the manifest."""
+def regenerate(
+    manifest: Manifest,
+    *,
+    inbox_root: Path,
+    window: RetentionWindow,
+    modes: ArchiveModes = DEFAULT_MODES,
+) -> InboxOutcome:
+    """Rewrite the index of every day in the window from the manifest.
+
+    The indexes are the part of the archive most likely to be read by someone who never runs
+    this program, so they are created with the archive's declared modes like everything else
+    under ``documents_root``.
+    """
     written: list[date] = []
     unchanged: list[date] = []
     removed: list[date] = []
@@ -77,7 +94,7 @@ def regenerate(manifest: Manifest, *, inbox_root: Path, window: RetentionWindow)
                 removed.append(day)
             continue
         entries += len(records)
-        if _write_if_changed(path, render_day(day, records)):
+        if _write_if_changed(path, render_day(day, records), modes=modes):
             written.append(day)
         else:
             unchanged.append(day)
@@ -139,7 +156,7 @@ def _version(version: int) -> str:
     return f"V{version:02d}"
 
 
-def _write_if_changed(path: Path, content: str) -> bool:
+def _write_if_changed(path: Path, content: str, *, modes: ArchiveModes) -> bool:
     """Write only a real change, and write it atomically. Returns whether anything was written.
 
     The archive is read while the watcher runs, so an index is replaced whole or not at all; and
@@ -148,8 +165,9 @@ def _write_if_changed(path: Path, content: str) -> bool:
     """
     if path.is_file() and path.read_text(encoding="utf-8") == content:
         return False
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(path.parent, modes)
     staging = path.with_name(path.name + ".part")
     staging.write_text(content, encoding="utf-8")
+    stamp_file(staging, modes)
     os.replace(staging, path)
     return True

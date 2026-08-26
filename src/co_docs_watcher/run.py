@@ -195,7 +195,10 @@ def execute_run(
                 window=retention_window,
             )
             inbox = regenerate(
-                manifest, inbox_root=config.inbox_root, window=retention_window
+                manifest,
+                inbox_root=config.inbox_root,
+                window=retention_window,
+                modes=config.archive_modes,
             )
         finally:
             connection.close()

@@ -79,6 +79,8 @@ Config discovery chain, in order: `--config` → `$CO_WATCHER_CONFIG` → `./con
 | `retention.days` | `7` | `N`, retained dates **including today** |
 | `discovery.days` | `retention.days` | dates swept by `run`, ending today; capped by retention |
 | `discovery.monitor_days` | `2` | dates swept by `run --monitor`; capped by `discovery.days` |
+| `files.directory_mode` | `0o755` | mode of every directory created under `documents_root` |
+| `files.file_mode` | `0o644` | mode of every file placed under `documents_root` |
 | `registry.max_age_days` | `7` | days a cached FCA package is used without re-downloading |
 | `source.timezone` | `America/Sao_Paulo` | anchors dates, directory names, and log timestamps |
 | `source.min_request_interval` | `15.0` | seconds between requests; the backend is fragile |
@@ -94,6 +96,7 @@ Python 3.12+. Dependency ceiling: `httpx`, `ruamel.yaml`, `tzdata`, and nothing 
 ```
 src/co_docs_watcher/
 ├── cli.py            entry point, subcommands, exit codes
+├── archive_modes.py  the declared creation modes, and the three ways they are applied
 ├── clock.py          source timezone, window, directory names
 ├── config.py         TOML discovery and loading
 ├── errors.py         exception hierarchy
@@ -266,6 +269,7 @@ Violating any of these requires explicit, justified declaration in this document
 - Written file extension is decided by the actual content, never by the name it arrived under: content signature (decisive) > `Content-Disposition` (for a response) or the envelope's `ExtensaoArquivo` (for an IPE attachment) > `Content-Type` (least trustworthy). The rule applies to a ZIP member exactly as it applies to a response — it is inside the container that this source hides a PDF behind an invented extension. A declared extension is validated before it may name a file; an attachment that satisfies neither signature nor declaration keeps its origin name and its container.
 - Validate content; a successful parse is not enough. Reject HTML bodies even when well-formed (an error page arrives with HTTP 200), reject empty ZIPs or entries containing `../`, require a plausible XML root, parse with external entity resolution disabled, cap response sizes.
 - A declared **encoding** is a hint like any other the source writes about itself. An XML member is parsed under the encoding it declares and, failing that, under ISO-8859-1 before it may be refused: the retry is narrow because ISO-8859-1 decodes every byte, so a member that still fails is malformed in structure rather than mislabelled, and the error reported is the first one, under the declaration the document itself made. What is stored are the delivered bytes, wrong declaration included — validation decides whether a member may be archived, never what it says.
+- The archive is handed to other people, so the modes it is created with are **declared, never inherited**: `files.directory_mode` and `files.file_mode` apply to the date directory, the company directory, a category subfolder, every document and container member, and the inbox indexes. An explicit `chmod` follows every creation, because a `mode=` argument alone is not enough for three separate reasons: the kernel writes `mode & ~umask`, `parents=True` creates the parents from `0o777` instead of the mode asked for, and `exist_ok=True` reapplies nothing to a directory an earlier run created — so a directory is re-stamped on every placement into it, which is also what repairs an archive built before this rule. Modes are set on the staging file, or the whole staging tree, **before** the `os.replace` that places it: placement is one rename, and nothing may be visible in the archive under a mode that is about to be corrected. Applied in the pipeline and never in `rad/`, which knows nothing about configuration.
 - Three roots: `data_root` (private — YAML, SQLite manifest, lock, FCA cache; must live on a filesystem local to the process, since SQLite over SMB/NFS has unreliable locking), `documents_root` (the shareable archive), and `logs_root` (the log file). They are separate because they are given away separately: one is state the watcher reads back, one is what people are handed, one is what an operator tails. All three are absolute by the time anything downstream sees them; a relative value in the configuration file is anchored on that file's own directory. Download temporaries (`.part`) go in `documents_root/.tmp/` so `rename` is atomic.
 - Date directories are `yyyy-mm-dd`, zero-padded, keyed on **delivery date** — lexicographic order must equal chronological order.
 - `N` is the number of retained dates including today: `first_retained_date = today - (N-1)`. Purge and inbox use this same frontier, and the discovery window is capped by it, or discovery re-downloads what purge deletes. Retention is a single global sliding window, configurable; per-category retention is backlog.

@@ -35,6 +35,13 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from co_docs_watcher.archive_modes import (
+    DEFAULT_MODES,
+    ArchiveModes,
+    ensure_directory,
+    stamp_file,
+    stamp_tree,
+)
 from co_docs_watcher.clock import directory_name
 from co_docs_watcher.errors import (
     CaptchaRequiredError,
@@ -101,17 +108,22 @@ def fetch_pending(
     documents_root: Path,
     staging_root: Path,
     watched: Iterable[WatchedCompany],
+    modes: ArchiveModes = DEFAULT_MODES,
     max_attempts: int = MAX_ATTEMPTS,
 ) -> FetchOutcome:
     """Download everything still ``discovered``, one document at a time.
 
     An isolated failure never kills the batch: it is recorded against the retry budget, the
     document goes back to the queue or to ``failed``, and the next document is fetched.
+
+    ``modes`` is what the archive is created with, all the way down: the staging tree is
+    stamped before the rename that places it, so nothing is ever visible in the archive under
+    a mode that is about to be corrected.
     """
     prefixes = {company.cvm_code: company.prefix for company in watched}
     # Under ``documents_root`` on purpose: placement is a ``rename``, and a rename is only
     # atomic within one filesystem.
-    staging_root.mkdir(parents=True, exist_ok=True)
+    ensure_directory(staging_root, modes)
     pending = manifest.documents.in_state(LocalState.DISCOVERED)
     available: list[Identity] = []
     retrying: list[Identity] = []
@@ -130,6 +142,7 @@ def fetch_pending(
                 staging=staging,
                 documents_root=documents_root,
                 prefix=_prefix_for(document, prefixes),
+                modes=modes,
             )
             manifest.files.record_files(identity, files)
             manifest.documents.transition(
@@ -224,16 +237,30 @@ def archive_path_of(files: Sequence[FileRecord]) -> Path:
 
 
 def _place(
-    delivery: Delivery, *, staging: Path, documents_root: Path, prefix: str
+    delivery: Delivery,
+    *,
+    staging: Path,
+    documents_root: Path,
+    prefix: str,
+    modes: ArchiveModes,
 ) -> list[FileRecord]:
-    """Move a staged delivery into the archive with one rename, and hash what landed."""
+    """Move a staged delivery into the archive with one rename, and hash what landed.
+
+    The two directory levels are created one at a time rather than in a single
+    ``parents=True`` call: parents are born from ``0o777`` regardless of the mode asked for,
+    which would give the date directory and the company directory two different modes. Each
+    level is stamped even when it already existed, which is what brings a date directory built
+    by an earlier run up to the mode now declared.
+    """
     document = delivery.document
-    company_root = documents_root / directory_name(document.delivery_date) / prefix
-    company_root.mkdir(parents=True, exist_ok=True)
+    date_root = ensure_directory(documents_root / directory_name(document.delivery_date), modes)
+    company_root = ensure_directory(date_root / prefix, modes)
     if _is_standalone(delivery):
-        placed = _place_document(delivery, company_root=company_root)
+        placed = _place_document(delivery, company_root=company_root, modes=modes)
     else:
-        placed = _place_container(delivery, staging=staging, company_root=company_root)
+        placed = _place_container(
+            delivery, staging=staging, company_root=company_root, modes=modes
+        )
     return [
         FileRecord.of(
             delivered,
@@ -254,24 +281,30 @@ def _is_standalone(delivery: Delivery) -> bool:
     return len(delivery.files) == 1 and delivery.files[0].role is FileRole.DOCUMENT
 
 
-def _place_document(delivery: Delivery, *, company_root: Path) -> list[tuple[DeliveredFile, Path]]:
+def _place_document(
+    delivery: Delivery, *, company_root: Path, modes: ArchiveModes
+) -> list[tuple[DeliveredFile, Path]]:
     """A standalone filing: one file, one ``rename``, the imposed name."""
     delivered = delivery.files[0]
     target = company_root / document_file_name(delivery.document, delivered.path.suffix or ".pdf")
+    stamp_file(delivered.path, modes)
     os.replace(delivered.path, target)
     return [(delivered, target)]
 
 
 def _place_container(
-    delivery: Delivery, *, staging: Path, company_root: Path
+    delivery: Delivery, *, staging: Path, company_root: Path, modes: ArchiveModes
 ) -> list[tuple[DeliveredFile, Path]]:
     """A structured delivery: the whole staging tree becomes the category subfolder.
 
     The container itself never reaches the archive — it was extracted at the boundary — and the
     generated reading PDF is renamed *before* the move, so the directory that arrives is
-    already the directory that stays.
+    already the directory that stays — and stamped before it, for the same reason: the rename
+    publishes the whole tree in one step, and there is no moment afterwards in which fixing
+    the modes would still be invisible.
     """
     staged = _impose_generated_names(delivery, staging=staging)
+    stamp_tree(staging, modes)
     target_dir = _free_directory(company_root, delivery)
     if target_dir.exists():
         # Ours, from a run that placed the delivery and died before recording it.

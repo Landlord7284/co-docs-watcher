@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import stat
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
+from co_docs_watcher.archive_modes import ArchiveModes
 from co_docs_watcher.errors import (
     CaptchaRequiredError,
     DocumentError,
@@ -360,3 +364,99 @@ def test_a_source_that_refuses_the_run_costs_the_queue_nothing(
     assert manifest.documents.require(document.identity).local_state is LocalState.DISCOVERED
     assert manifest.attempts.attempts(document.identity) == 0
     assert list(roots.staging_root.iterdir()) == []
+
+
+MODES = ArchiveModes(directory_mode=0o750, file_mode=0o640)
+
+
+@pytest.fixture
+def restrictive_umask() -> Iterator[None]:
+    """Run under a umask that would strip every group and other bit from a creation.
+
+    ``0o077`` is not exotic — it is what a hardened image or a login shell may well set — and
+    it is the value that makes the difference visible: without an explicit ``chmod``, a
+    directory born from ``mkdir(0o755)`` lands ``0o700`` and a written file lands ``0o600``.
+    """
+    previous = os.umask(0o077)
+    try:
+        yield
+    finally:
+        os.umask(previous)
+
+
+def mode_of(path: Path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
+
+
+@pytest.mark.usefixtures("restrictive_umask")
+def test_a_standalone_document_and_its_two_directory_levels_carry_the_configured_modes(
+    manifest: Manifest, roots: Roots
+) -> None:
+    """The umask has no vote: the archive is handed to people who never run this program."""
+    document = make_document()
+    queue(manifest, document)
+
+    run(manifest, roots, FakeSource(), modes=MODES)
+
+    placed = roots.day(TODAY) / "PETR" / "Fato-Relevante_160310_V01.pdf"
+    assert mode_of(placed) == 0o640
+    assert mode_of(placed.parent) == 0o750
+    # The date directory is a *parent* of the company directory, and parents created by
+    # ``parents=True`` are born from 0o777 — which is why the two levels are created apart.
+    assert mode_of(roots.day(TODAY)) == 0o750
+
+
+@pytest.mark.usefixtures("restrictive_umask")
+def test_a_container_carries_the_modes_down_to_every_member(
+    manifest: Manifest, roots: Roots
+) -> None:
+    document = make_document(category=ITR)
+    queue(manifest, document)
+    members = {
+        "009512ITR30-06-2026v1.xml": b"<itr><conta/></itr>",
+        "anexos/nota.xml": b"<nota/>",
+    }
+    source = FakeSource(
+        recipes={
+            document.identity: lambda doc, into: zip_delivery(doc, into, members=members)
+        }
+    )
+
+    run(manifest, roots, source, modes=MODES)
+
+    folder = roots.day(TODAY) / "PETR" / "ITR"
+    assert mode_of(folder) == 0o750
+    assert mode_of(folder / "anexos") == 0o750
+    assert mode_of(folder / "ITR_160310_V01.pdf") == 0o640
+    assert mode_of(folder / "009512ITR30-06-2026v1.xml") == 0o640
+    assert mode_of(folder / "anexos" / "nota.xml") == 0o640
+
+
+@pytest.mark.usefixtures("restrictive_umask")
+def test_a_date_directory_left_by_an_earlier_run_is_re_stamped(
+    manifest: Manifest, roots: Roots
+) -> None:
+    """``exist_ok=True`` reapplies nothing, so an archive built before this rule is repaired."""
+    stale = roots.day(TODAY)
+    stale.mkdir()
+    os.chmod(stale, 0o700)
+    document = make_document()
+    queue(manifest, document)
+
+    run(manifest, roots, FakeSource(), modes=MODES)
+
+    assert mode_of(stale) == 0o750
+
+
+@pytest.mark.usefixtures("restrictive_umask")
+def test_a_caller_that_names_no_modes_gets_the_declared_defaults(
+    manifest: Manifest, roots: Roots
+) -> None:
+    document = make_document()
+    queue(manifest, document)
+
+    run(manifest, roots, FakeSource())
+
+    placed = roots.day(TODAY) / "PETR" / "Fato-Relevante_160310_V01.pdf"
+    assert mode_of(placed) == 0o644
+    assert mode_of(placed.parent) == 0o755

@@ -66,6 +66,10 @@ days = 7                       # retained dates, including today
 days = 7                       # swept by `run`; defaults to retention.days, never exceeds it
 monitor_days = 2               # swept by `run --monitor`; never exceeds discovery.days
 
+[files]
+directory_mode = 0o755         # every directory created under documents_root
+file_mode = 0o644              # every document, member and inbox index placed there
+
 [registry]
 max_age_days = 7               # days a cached FCA package is used without re-downloading
 

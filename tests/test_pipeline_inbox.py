@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import os
+import stat
+from collections.abc import Iterator
 from datetime import timedelta
 from pathlib import Path
 
+import pytest
+
+from co_docs_watcher.archive_modes import ArchiveModes
 from co_docs_watcher.clock import RetentionWindow
 from co_docs_watcher.manifest.repo import FileRecord, Manifest
 from co_docs_watcher.models import FileRole, LocalState, SourceDocument
@@ -206,3 +212,31 @@ def test_only_the_days_of_the_window_are_regenerated(
 
 def _entries(path: Path) -> list[str]:
     return [line for line in path.read_text(encoding="utf-8").splitlines() if line.startswith("- ")]
+
+
+@pytest.fixture
+def restrictive_umask() -> Iterator[None]:
+    previous = os.umask(0o077)
+    try:
+        yield
+    finally:
+        os.umask(previous)
+
+
+@pytest.mark.usefixtures("restrictive_umask")
+def test_the_index_and_its_directory_carry_the_configured_modes(
+    manifest: Manifest, roots: Roots, window: RetentionWindow
+) -> None:
+    """The index is what a reader opens first; it is created for reading, not for the umask."""
+    document = make_document()
+    archived(manifest, document, Path(TODAY.isoformat()) / "PETR" / "doc.pdf")
+
+    regenerate(
+        manifest,
+        inbox_root=roots.inbox_root,
+        window=window,
+        modes=ArchiveModes(directory_mode=0o750, file_mode=0o640),
+    )
+
+    assert stat.S_IMODE(index_of(roots).stat().st_mode) == 0o640
+    assert stat.S_IMODE(roots.inbox_root.stat().st_mode) == 0o750
