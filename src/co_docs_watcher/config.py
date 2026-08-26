@@ -36,12 +36,20 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from co_docs_watcher.archive_modes import (
+    DEFAULT_DIRECTORY_MODE,
+    DEFAULT_FILE_MODE,
+    MAX_MODE,
+    ArchiveModes,
+)
 from co_docs_watcher.clock import install_source_timezone
 from co_docs_watcher.errors import ConfigError
 from co_docs_watcher.text import normalize_cvm_code
 
 __all__ = [
     "CONFIG_ENV_VAR",
+    "DEFAULT_DIRECTORY_MODE",
+    "DEFAULT_FILE_MODE",
     "DEFAULT_LOG_BACKUPS",
     "DEFAULT_LOG_MAX_BYTES",
     "DEFAULT_MAX_REQUESTS_PER_RUN",
@@ -110,6 +118,7 @@ _SCHEMA: dict[str, set[str]] = {
     "paths": {"data_root", "documents_root", "logs_root"},
     "logging": {"max_bytes", "backups"},
     "retention": {"days"},
+    "files": {"directory_mode", "file_mode"},
     "discovery": {"days", "monitor_days"},
     "registry": {"max_age_days"},
     "source": {"timezone", "min_request_interval", "max_requests_per_run", "base_url"},
@@ -139,6 +148,8 @@ class Config:
     logs_root: Path
     log_max_bytes: int
     log_backups: int
+    directory_mode: int
+    file_mode: int
     timezone: ZoneInfo
     retention_days: int
     discovery_days: int
@@ -149,6 +160,12 @@ class Config:
     source_base_url: str
     prefix_overrides: Mapping[str, str]
     origin: Path | None
+
+    @property
+    def archive_modes(self) -> ArchiveModes:
+        """The two modes, as the pipeline takes them. Nothing below the composition root
+        reads a ``Config``, and nothing anywhere reads the umask."""
+        return ArchiveModes(directory_mode=self.directory_mode, file_mode=self.file_mode)
 
     @property
     def timezone_name(self) -> str:
@@ -255,6 +272,8 @@ def load_config(
             logs_root=cwd / DEFAULT_LOGS_ROOT,
             log_max_bytes=DEFAULT_LOG_MAX_BYTES,
             log_backups=DEFAULT_LOG_BACKUPS,
+            directory_mode=DEFAULT_DIRECTORY_MODE,
+            file_mode=DEFAULT_FILE_MODE,
             timezone=_timezone(DEFAULT_TIMEZONE),
             retention_days=DEFAULT_RETENTION_DAYS,
             discovery_days=DEFAULT_RETENTION_DAYS,
@@ -298,6 +317,7 @@ def _from_file(path: Path) -> Config:
     paths = _section(raw, "paths", path)
     logging_section = _section(raw, "logging", path)
     retention = _section(raw, "retention", path)
+    files = _section(raw, "files", path)
     discovery = _section(raw, "discovery", path)
     registry = _section(raw, "registry", path)
     source = _section(raw, "source", path)
@@ -319,6 +339,10 @@ def _from_file(path: Path) -> Config:
         log_backups=_positive_int(
             logging_section, "backups", DEFAULT_LOG_BACKUPS, where="logging", path=path
         ),
+        directory_mode=_mode(
+            files, "directory_mode", DEFAULT_DIRECTORY_MODE, where="files", path=path
+        ),
+        file_mode=_mode(files, "file_mode", DEFAULT_FILE_MODE, where="files", path=path),
         timezone=_timezone(
             _string(source, "timezone", DEFAULT_TIMEZONE, where="source", path=path)
         ),
@@ -480,6 +504,28 @@ def _positive_int(
     value = section[key]
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ConfigError(f"{path}: [{where}] {key} must be an integer >= 1")
+    return value
+
+
+def _mode(
+    section: Mapping[str, Any], key: str, default: int, *, where: str, path: Path
+) -> int:
+    """A creation mode, read as TOML writes it.
+
+    TOML 1.0 has octal integer literals, so ``0o755`` is written the way an operator reads a
+    mode and arrives here as the integer it means. A decimal spelling is accepted and means
+    what it says — refusing it would be refusing arithmetic — and every message spells the
+    offending value back in octal, because that is the notation the mistake was made in.
+    """
+    if key not in section:
+        return default
+    value = section[key]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ConfigError(f"{path}: [{where}] {key} must be an integer mode (got {value!r})")
+    if not 0 <= value <= MAX_MODE:
+        raise ConfigError(
+            f"{path}: [{where}] {key} must be between 0o0 and {MAX_MODE:#o} (got {value:#o})"
+        )
     return value
 
 

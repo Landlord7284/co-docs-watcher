@@ -7,8 +7,11 @@ from pathlib import Path
 
 import pytest
 
+from co_docs_watcher.archive_modes import ArchiveModes
 from co_docs_watcher.config import (
     CONFIG_ENV_VAR,
+    DEFAULT_DIRECTORY_MODE,
+    DEFAULT_FILE_MODE,
     DEFAULT_LOG_BACKUPS,
     DEFAULT_LOG_MAX_BYTES,
     DEFAULT_MAX_REQUESTS_PER_RUN,
@@ -104,6 +107,29 @@ def test_documented_defaults_apply_when_the_file_omits_them(tmp_path: Path) -> N
     assert config.registry_max_age_days == DEFAULT_REGISTRY_MAX_AGE_DAYS
     assert config.discovery_days == DEFAULT_RETENTION_DAYS
     assert config.monitor_days == DEFAULT_MONITOR_DAYS
+    assert config.directory_mode == DEFAULT_DIRECTORY_MODE
+    assert config.file_mode == DEFAULT_FILE_MODE
+
+
+def test_the_archive_modes_are_declared_even_when_the_file_omits_them(tmp_path: Path) -> None:
+    """A configuration naming neither behaves as the defaults, never as the process umask."""
+    write(tmp_path / "config.toml")
+    config = load_config(env={}, cwd=tmp_path, home=tmp_path)
+    assert config.archive_modes == ArchiveModes(0o755, 0o644)
+
+
+def test_a_mode_is_read_as_the_octal_it_is_written_as(tmp_path: Path) -> None:
+    write(tmp_path / "config.toml", VALID + "[files]\ndirectory_mode = 0o750\nfile_mode = 0o640\n")
+    config = load_config(env={}, cwd=tmp_path, home=tmp_path)
+    assert config.directory_mode == 0o750 == 488
+    assert config.archive_modes == ArchiveModes(0o750, 0o640)
+
+
+def test_a_decimal_mode_means_what_it_says(tmp_path: Path) -> None:
+    """Octal is the notation an operator reads; the value is an integer either way."""
+    write(tmp_path / "config.toml", VALID + "[files]\ndirectory_mode = 493\n")
+    config = load_config(env={}, cwd=tmp_path, home=tmp_path)
+    assert config.directory_mode == 0o755
 
 
 def test_discovery_days_follows_retention_when_unset(tmp_path: Path) -> None:
@@ -301,6 +327,10 @@ logs_root = "~/watcher/logs"
         (VALID + '[prefix_overrides]\nPETR = "PETR"\n', "is not a CVM code"),
         (VALID + '[prefix_overrides]\n"009512" = "../escape"\n', "letters, digits and hyphens"),
         (VALID + "[prefix_overrides]\n\"009512\" = 4\n", "letters, digits and hyphens"),
+        (VALID + "[files]\ndirectory_mode = 0o10000\n", r"between 0o0 and 0o7777 \(got 0o10000\)"),
+        (VALID + "[files]\nfile_mode = -1\n", "between 0o0 and 0o7777"),
+        (VALID + '[files]\nfile_mode = "0o644"\n', "must be an integer mode"),
+        (VALID + "[files]\numask = 18\n", "unknown key"),
         (VALID + "[archive]\nkeep = true\n", "unknown section"),
         ('paths = "nope"\n', "must be a table"),
     ],
