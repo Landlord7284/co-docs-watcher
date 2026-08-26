@@ -5,9 +5,10 @@ inbox, the watermark — is read in the source's timezone, never the host's. A c
 would otherwise archive a document delivered at 22:00 in São Paulo under the following day, and
 the archive would disagree with the regulator about when things were published.
 
-The window is a single object, computed once and shared: discovery, purge and inbox all read
-the same frontier. Computing it twice is how a purge deletes what discovery will download again
-on the next run.
+A window is a single object, computed once per run and shared by every step that reads it:
+purge and the inbox read the retention window, and discovery reads a window of its own, capped
+by retention at configuration load. Computing a frontier twice is how a purge deletes what
+discovery will download again on the next run.
 """
 
 from __future__ import annotations

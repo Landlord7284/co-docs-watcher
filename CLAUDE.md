@@ -49,10 +49,11 @@ The canonical mode is **one-shot**. No daemon inside the package: a periodic mod
 python -m co_docs_watcher doctor     # config, roots, timezone, source
 python -m co_docs_watcher add --ticker PETR
 python -m co_docs_watcher add --cvm-code 009512
-python -m co_docs_watcher run        # the canonical mode
+python -m co_docs_watcher run             # the canonical mode: sweeps discovery.days
+python -m co_docs_watcher run --monitor   # the frequent profile: sweeps discovery.monitor_days
 ```
 
-Subcommands: `doctor`, `add`, `list [QUERY]`, `rm QUERY`, `resolve`, `run`, `reconcile`, `purge`, `status`.
+Subcommands: `doctor`, `add`, `list [QUERY]`, `rm QUERY`, `resolve`, `run [--monitor]`, `reconcile`, `purge`, `status`. `run` takes a profile flag and never a number — the cron line carries only which profile, so retuning a window is a configuration edit and nothing else. `doctor` prints both resolved discovery windows and which profile sweeps each; `status` reports them beside the retention window.
 
 | Exit code | Meaning |
 |---:|---|
@@ -76,6 +77,8 @@ Config discovery chain, in order: `--config` → `$CO_WATCHER_CONFIG` → `./con
 | `logging.max_bytes` | `5242880` | bytes the log file reaches before it rotates |
 | `logging.backups` | `5` | rotated log files kept |
 | `retention.days` | `7` | `N`, retained dates **including today** |
+| `discovery.days` | `retention.days` | dates swept by `run`, ending today; capped by retention |
+| `discovery.monitor_days` | `2` | dates swept by `run --monitor`; capped by `discovery.days` |
 | `registry.max_age_days` | `7` | days a cached FCA package is used without re-downloading |
 | `source.timezone` | `America/Sao_Paulo` | anchors dates, directory names, and log timestamps |
 | `source.min_request_interval` | `15.0` | seconds between requests; the backend is fragile |
@@ -126,7 +129,7 @@ src/co_docs_watcher/
 1. **lock** — `flock` on `data_root`.
 2. **reconcile** — intermediate states left by an interrupted run.
 3. **registry** — refresh the FCA if stale. Failure here blocks new registrations, never monitoring.
-4. **discover** — one sweep per day of the window, **most recent day first**, filtered locally against the watched CVM codes; `Ativo` goes to the queue, `Inativo`/`Cancelado` reconcile what is already on disk: the sweep flags the state and the enactment — the same one step 2 performs — runs immediately after it, so a cancellation observed today takes the file with it today.
+4. **discover** — one sweep per day of the discovery window, **most recent day first**, filtered locally against the watched CVM codes; `Ativo` goes to the queue, `Inativo`/`Cancelado` reconcile what is already on disk: the sweep flags the state and the enactment — the same one step 2 performs — runs immediately after it, so a cancellation observed today takes the file with it today.
 5. **fetch** — download to `.tmp/`, validate, extract if ZIP, atomic `rename`. The queue drains **most recent delivery date first**, publication order kept within a day.
 6. **purge** — whatever aged out of the window.
 7. **inbox** — regenerate the index of *every* day in the window, not just today's.
@@ -257,14 +260,15 @@ Full contract, with measurement dates and payload examples, in `docs/fonte-rad.m
 Violating any of these requires explicit, justified declaration in this document — silent divergence is what must never happen.
 
 - Identity/dedupe key is `(document_id, version)`; the content hash never dedupes.
-- Every run queries the whole window `[today - (N-1), today]`. There is no incremental interval; the watermark records completed progress and raises alerts, never feeds the interval. The window is swept and the queue drained **most recent day first**: a run is cut short by a captcha, by the request budget, or by the backend going down, and what it managed to do should be the days a reader opens first, not the days purge is about to reach. Order is a policy of the sweep and the queue, never a property of the window — the inbox and the retention frontier read the window as a set of days.
+- Every run queries its whole discovery window. There is no incremental interval. Two windows exist, both ending today, by declared amendment of the former single-window rule: purge, the inbox, and the retention frontier keep the retention window `[today - (N-1), today]`; discovery sweeps a window of its own — `discovery.days` under `run`, `discovery.monitor_days` under `run --monitor` — constrained at configuration load never to exceed retention. The bound is not symmetric because the failures are not: a discovery window wider than retention re-downloads what purge deletes, so it is refused; a discovery window narrower than retention is coverage deliberately traded for frequency, so it is allowed — and it is why the watermark refuses to advance for it. The window is swept and the queue drained **most recent day first**: a run is cut short by a captcha, by the request budget, or by the backend going down, and what it managed to do should be the days a reader opens first, not the days purge is about to reach. Order is a policy of the sweep and the queue, never a property of the window — the inbox and the retention frontier read their window as a set of days.
+- The watermark records completed progress and raises alerts, never feeds the interval. Only a sweep that covered the retention window advances it; a narrower sweep reads it and may warn, and never writes it — recording a narrow sweep's last day would assert "everything through today has been observed" over days never asked about, greening the gap alarm over a rotting window. Staleness is always compared against the **retention** frontier, never the discovery window's: retention is what the archive promises to hold. The intended consequence: stop running the full sweep and the warning fires every day, making the loss of coverage a visible decision instead of a silent omission.
 - A rediscovered document updates mutable fields and never triggers a new download. `status` in the manifest means "last state observed within the window".
 - Written file extension is decided by the actual content, never by the name it arrived under: content signature (decisive) > `Content-Disposition` (for a response) or the envelope's `ExtensaoArquivo` (for an IPE attachment) > `Content-Type` (least trustworthy). The rule applies to a ZIP member exactly as it applies to a response — it is inside the container that this source hides a PDF behind an invented extension. A declared extension is validated before it may name a file; an attachment that satisfies neither signature nor declaration keeps its origin name and its container.
 - Validate content; a successful parse is not enough. Reject HTML bodies even when well-formed (an error page arrives with HTTP 200), reject empty ZIPs or entries containing `../`, require a plausible XML root, parse with external entity resolution disabled, cap response sizes.
 - A declared **encoding** is a hint like any other the source writes about itself. An XML member is parsed under the encoding it declares and, failing that, under ISO-8859-1 before it may be refused: the retry is narrow because ISO-8859-1 decodes every byte, so a member that still fails is malformed in structure rather than mislabelled, and the error reported is the first one, under the declaration the document itself made. What is stored are the delivered bytes, wrong declaration included — validation decides whether a member may be archived, never what it says.
 - Three roots: `data_root` (private — YAML, SQLite manifest, lock, FCA cache; must live on a filesystem local to the process, since SQLite over SMB/NFS has unreliable locking), `documents_root` (the shareable archive), and `logs_root` (the log file). They are separate because they are given away separately: one is state the watcher reads back, one is what people are handed, one is what an operator tails. All three are absolute by the time anything downstream sees them; a relative value in the configuration file is anchored on that file's own directory. Download temporaries (`.part`) go in `documents_root/.tmp/` so `rename` is atomic.
 - Date directories are `yyyy-mm-dd`, zero-padded, keyed on **delivery date** — lexicographic order must equal chronological order.
-- `N` is the number of retained dates including today: `first_retained_date = today - (N-1)`. Purge, query window, and inbox all use this same frontier, or discovery re-downloads what purge deletes. Retention is a single global sliding window, configurable; per-category retention is backlog.
+- `N` is the number of retained dates including today: `first_retained_date = today - (N-1)`. Purge and inbox use this same frontier, and the discovery window is capped by it, or discovery re-downloads what purge deletes. Retention is a single global sliding window, configurable; per-category retention is backlog.
 - The lock is `flock`, not a pidfile: the kernel releases it when the owner dies, so there is no stale lock to detect and a crash never leaves the watcher stuck.
 - Download state machine `discovered → downloading → available`, with startup reconciliation. Filesystem and SQLite do not form an atomic transaction: idempotency rests on the manifest plus reconciliation, never on file existence.
 - YAML write protection: atomic temp file + `rename`, **and** a hash comparison of the on-disk content against what was loaded before renaming — if it changed, do not overwrite; record a visible conflict and preserve the human's edit. `mtime` is not enough. Comments must survive the rewrite (hence `ruamel.yaml`).

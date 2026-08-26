@@ -9,10 +9,19 @@ daemon; schedule the one-shot with whatever your platform provides (cron, launch
 loop) if you want periodic runs.
 
 ```bash
-python -m co_docs_watcher doctor     # check config, roots, timezone, source
+python -m co_docs_watcher doctor          # check config, roots, timezone, windows, source
 python -m co_docs_watcher add --ticker PETR
-python -m co_docs_watcher run        # the canonical mode
+python -m co_docs_watcher run             # the canonical mode: sweeps discovery.days
+python -m co_docs_watcher run --monitor   # the frequent profile: sweeps discovery.monitor_days
 ```
+
+`run` sweeps the discovery window (`discovery.days`, by default the whole retention
+window); `run --monitor` sweeps the narrow `discovery.monitor_days` window (default 2) and
+differs in nothing else. The typical schedule is a frequent `run --monitor` plus one daily
+`run`: at the source, a superseded or cancelled document keeps its original delivery date,
+so supersessions of older documents are only visible to the sweep that re-queries older
+days. The flag is a profile, never a number — how many days each profile sweeps is settled
+in the configuration file.
 
 ## Configuration
 
@@ -53,6 +62,10 @@ backups = 5                    # rotations kept
 [retention]
 days = 7                       # retained dates, including today
 
+[discovery]
+days = 7                       # swept by `run`; defaults to retention.days, never exceeds it
+monitor_days = 2               # swept by `run --monitor`; never exceeds discovery.days
+
 [registry]
 max_age_days = 7               # days a cached FCA package is used without re-downloading
 
@@ -84,8 +97,11 @@ Exit code `4` is not a transient failure: retrying makes it worse.
 ### `doctor`
 
 Checks everything a run depends on and prints one line per finding: the configuration file
-in use, both roots (created if missing, probed for writability), the timezone, the watch
-list, the registry cache age, and the source (one real listing request for today). Exits
+in use, the roots (created if missing, probed for writability), the timezone, both
+resolved discovery windows — first date, last date, day count, and which of `run` and
+`run --monitor` sweeps each, so the configuration is verifiable without spending a sweep
+on it — the watch list, the registry cache age, and the source (one real listing request
+for today). Exits
 `0` when everything passed, `1` when something failed, `4` when the source demanded a
 captcha.
 
@@ -135,12 +151,19 @@ just stops being monitored.
 Shows exactly what `add` would write — CVM code, folder prefix and how it was chosen,
 match stage, legal name — without writing anything.
 
-### `run`
+### `run [--monitor]`
 
 One complete pass: lock, reconcile what an interrupted run left, refresh the FCA cache if
-stale, sweep every day of the retention window, enact supersessions and cancellations,
-download the queue, purge what aged out, and regenerate the inbox index of every day in
-the window. Progress goes to stdout, warnings and errors to stderr.
+stale, sweep every day of the discovery window, enact supersessions and cancellations,
+download the queue, purge what aged out of the retention window, and regenerate the inbox
+index of every day in it. Progress goes to stdout, warnings and errors to stderr.
+
+`--monitor` sweeps `discovery.monitor_days` instead of `discovery.days` and changes
+nothing else — purge, inbox, and the registry refresh are identical between the profiles.
+Only a sweep that covered the whole retention window advances the last-completed-sweep
+watermark; a monitor run leaves it alone, and warns when it has fallen behind the
+retention window. Stop scheduling the full sweep and that warning fires on every run:
+give up the older days deliberately or keep the daily `run`.
 
 A registry that cannot be refreshed, or a document that cannot be fetched, is reported
 and skipped: the run finishes and exits `1`.
@@ -159,9 +182,9 @@ exists for shrinking the window without sweeping.
 
 ### `status`
 
-Prints the configuration in use, the current window, the number of watched companies, the
-document counts per state, and the date of the last completed sweep. Touches nothing and
-talks to no one.
+Prints the configuration in use, the retention window and both discovery windows, the
+number of watched companies, the document counts per state, and the date of the last
+completed sweep. Touches nothing and talks to no one.
 
 Anything the archive still owes — queued, interrupted mid-download, or given up on — is
 listed one per line with the last failure recorded against it, verbatim:

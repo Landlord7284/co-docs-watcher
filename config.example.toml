@@ -41,8 +41,19 @@ backups = 5
 
 [retention]
 # N retained dates, counting today: first_retained_date = today - (N - 1). The same
-# frontier drives the query window, the purge, and the inbox.
+# frontier drives the purge and the inbox, and caps both discovery windows below.
 days = 7
+
+[discovery]
+# Dates swept by `run`, ending today. Follows retention.days when unset; may be narrower,
+# never wider — a sweep wider than retention re-downloads what purge deletes. Only a sweep
+# covering the whole retention window advances the last-completed-sweep watermark, so
+# narrowing this makes every run warn about the days it stopped observing.
+days = 7
+# Dates swept by `run --monitor`, the frequent narrow profile. A superseded or cancelled
+# row keeps its original delivery date at the source, so supersessions of older documents
+# are only visible to the full sweep: schedule a daily `run` beside the monitor.
+monitor_days = 2
 
 [registry]
 # Days a cached FCA package is used before it is downloaded again. The registry only moves

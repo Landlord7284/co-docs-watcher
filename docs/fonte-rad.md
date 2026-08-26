@@ -326,6 +326,19 @@ Três consequências:
    `009512` · `FRE` · `2026` · `2026` · `07` · `00160125` · `-70` — código CVM,
    sigla da categoria, ano de referência, versão, sequencial, dígito.
 
+### A linha superada fica no dia da entrega original (medido 25/08/2026)
+
+Uma linha `Inativo` ou `Cancelado` mantém a sua **data de entrega original**:
+ela aparece na listagem do dia em que foi entregue, não do dia em que foi
+superada ou retirada. Medido sobre o mercado inteiro, 18–24/08/2026, 2.191
+linhas: das 34 linhas não ativas, 12 tinham sucessora ativa entregue em dia
+posterior, com intervalos de 1 (×7), 2 (×2), 3 (×2) e 4 (×1) dias.
+
+Consequência: uma supersessão de documento mais antigo só é visível
+**re-consultando o dia da entrega original** — uma janela de descoberta
+estreita, por mais frequente que rode, nunca a observa. É isso que a varredura
+completa diária compra além da recuperação de lacunas.
+
 `numProtocolo` precisa ser **persistido**, não derivado: é argumento obrigatório
 do download. A decomposição estrutural acima vale para os **estruturados**; nos
 eventuais o `numProtocolo` é um número simples (`1560076`), sem estrutura

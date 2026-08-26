@@ -6,7 +6,7 @@ Run explicitly with ``pytest -m live``. Never part of the default selection or o
 Discipline holds even here — *especially* here, because this suite talks to the real, fragile
 backend: at least five seconds between requests, a hard budget for the whole suite run
 (:data:`MAX_REQUESTS`), no retries, and a captcha demand stops the suite immediately instead
-of pressing on. The whole suite costs one listing request plus three downloads.
+of pressing on. The whole suite costs two listing requests plus three downloads.
 
 A failure in this file usually means the source moved, not that the code broke: the failure
 messages say so, and the fix is to update ``docs/fonte-rad.md`` with the newly observed
@@ -39,8 +39,9 @@ TIMEZONE = ZoneInfo("America/Sao_Paulo")
 #: Seconds between any two requests this suite issues, transport-level pacing included.
 MIN_INTERVAL = 15.0
 
-#: The hard budget for one run of the whole suite: 1 listing + 3 downloads, with no slack
-#: for retries — a failed request is a finding, not something to insist on.
+#: The hard budget the client is given: the suite's 3 downloads, with no slack for retries
+#: — a failed request is a finding, not something to insist on. The two listing fixtures are
+#: sent outside the client, so they assert on the envelope rather than on what it digested.
 MAX_REQUESTS = 6
 
 ROW_SEPARATOR = "$&&*"
@@ -244,3 +245,96 @@ def _pick(documents: list[SourceDocument], *, structured: bool | None) -> Source
             f"{'structured document' if structured else 'document'}; re-run on another day"
         )
     return candidates[0]
+
+
+@pytest.fixture(scope="module")
+def recent_week() -> list[SourceDocument]:
+    """Seven days of the whole market in one exchange, for the cross-day questions.
+
+    A single day cannot answer where a superseded row lives: the answer is a comparison
+    between the day a document was delivered and the day its replacement was. The range is
+    sent outside :class:`RadClient` for the same reason the envelope fixture is — the suite
+    asserts on the source, not on what the client digested — and it does not draw on the
+    client's budget.
+    """
+    last = measured_day()
+    first = last - timedelta(days=6)
+    payload = search_payload(last)
+    payload["dataDe"] = f"{first.day:02d}/{first.month:02d}/{first.year:04d}"
+    payload["dataAte"] = f"{last.day:02d}/{last.month:02d}/{last.year:04d}"
+
+    response = httpx.post(
+        BASE_URL + "frmConsultaExternaCVM.aspx/ListarDocumentos",
+        json=payload,
+        headers={"Content-Type": "application/json; charset=UTF-8"},
+        timeout=180.0,
+    )
+    time.sleep(MIN_INTERVAL)
+    assert response.status_code == 200, (
+        f"the search PageMethod answered HTTP {response.status_code}; {DIVERGED}"
+    )
+    envelope = json.loads(response.text)["d"]
+    if envelope.get("SolicitarCaptcha") == "S":
+        pytest.exit(
+            "the source demanded a captcha: the suite stops here. Do not re-run now — "
+            "reduce frequency and try again later.",
+            returncode=4,
+        )
+    assert envelope.get("temErro") is False, (
+        f"the backend answered temErro ({envelope.get('msgErro')!r}): transient — re-run the "
+        "suite later rather than immediately"
+    )
+    return parse_listing(envelope["dados"])
+
+
+def test_a_superseded_row_keeps_its_original_delivery_date(
+    recent_week: list[SourceDocument],
+) -> None:
+    """Last measured 2026-08-25: an ``Inativo`` or ``Cancelado`` row stays in the listing of
+    the day it was **originally delivered**, not the day it was superseded or withdrawn.
+
+    This is what the daily full sweep buys beyond gap recovery. A narrow discovery window
+    observes only its own days however often it runs, so a supersession of an older document
+    is visible only by re-querying the day that document was delivered on. Measured over
+    2026-08-18..2026-08-24: of 34 non-active rows, 12 had an active successor delivered on a
+    later day — 7 at a gap of one day, 2 at two, 2 at three, 1 at four.
+
+    If this ever fails the other way — every non-active row sharing its delivery date with
+    its successor — the supersession would be arriving under the current day instead, the
+    monitor would see it for free, and the sweep's role would shrink to gap recovery alone.
+    """
+    lineages: dict[tuple[str, str, object], list[SourceDocument]] = {}
+    for document in recent_week:
+        key = (document.cvm_code, document.category, document.reference_date)
+        lineages.setdefault(key, []).append(document)
+
+    flagged = [d for d in recent_week if d.status is not SourceStatus.ACTIVE]
+    assert flagged, (
+        f"no Inativo or Cancelado row in seven days of the whole market; {DIVERGED}"
+    )
+
+    cross_day = []
+    for document in flagged:
+        key = (document.cvm_code, document.category, document.reference_date)
+        successors = [
+            other
+            for other in lineages[key]
+            if other.status is SourceStatus.ACTIVE
+            and other.delivery_date > document.delivery_date
+        ]
+        if successors:
+            gap = (min(s.delivery_date for s in successors) - document.delivery_date).days
+            cross_day.append((gap, document))
+
+    if not cross_day:
+        pytest.skip(
+            f"{len(flagged)} non-active row(s) in the week, none with an active successor "
+            "delivered on a later day: a week too quiet to settle the question. Re-run on "
+            "another week rather than reading this as a contradiction."
+        )
+
+    for gap, document in cross_day:
+        assert gap > 0, (
+            f"document {document.identity} ({document.status}) was delivered on "
+            f"{document.delivery_date} and its active successor no later; {DIVERGED}"
+        )
