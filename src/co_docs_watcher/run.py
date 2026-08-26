@@ -25,7 +25,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 
-from co_docs_watcher.clock import Clock, RetentionWindow
+from co_docs_watcher.clock import Clock, RetentionWindow, window_ending
 from co_docs_watcher.config import Config
 from co_docs_watcher.cvm.cache import RegistryCache
 from co_docs_watcher.errors import (
@@ -67,7 +67,8 @@ logger = logging.getLogger(__name__)
 class RunReport:
     """What one run did, step by step. The CLI turns it into an exit code and nothing else."""
 
-    window: RetentionWindow
+    retention_window: RetentionWindow
+    discovery_window: RetentionWindow
     reconciled: ReconcileOutcome
     registry_error: str | None
     discovery: DiscoveryOutcome | None
@@ -131,19 +132,35 @@ def probe_source(config: Config) -> str:
 def execute_run(
     config: Config,
     *,
+    monitor: bool = False,
     source: Source | None = None,
     clock: Clock | None = None,
     criteria: Callable[[SourceDocument], bool] = archive_everything,
 ) -> RunReport:
     """One run: the seven steps, in order, under the lock.
 
+    ``monitor`` selects which configured integer becomes the discovery window and nothing
+    else: the sweep covers ``discovery.monitor_days`` instead of ``discovery.days``, and the
+    other six steps are byte-identical between the profiles. The retention window keeps
+    driving purge and the inbox, and both windows end on the same ``today``, read once.
+
     ``source`` and ``clock`` are injectable for tests; the CLI passes neither, which is what
     makes this module the composition root. Raises ``LockHeldError`` (exit 3) without touching
     anything, and ``CaptchaRequiredError`` (exit 4) after putting the queue back in order.
     """
     clock = Clock.installed() if clock is None else clock
-    window = clock.window(config.retention_days)
-    logger.info("run: window %s..%s (%d dates)", window.first, window.last, window.days)
+    today = clock.today()
+    retention_window = window_ending(today, config.retention_days)
+    discovery_window = window_ending(today, config.sweep_days(monitor=monitor))
+    logger.info(
+        "run: discovery window %s..%s (%d dates), retention window %s..%s (%d dates)",
+        discovery_window.first,
+        discovery_window.last,
+        discovery_window.days,
+        retention_window.first,
+        retention_window.last,
+        retention_window.days,
+    )
 
     with RunLock(config.lock_path):
         connection = open_manifest(config.manifest_path)
@@ -160,12 +177,12 @@ def execute_run(
             if source is None:
                 with open_source(config) as built:
                     discovery, fetched, interrupted = _observe_and_fetch(
-                        built, manifest, config=config, window=window,
+                        built, manifest, config=config, window=discovery_window,
                         watched=watched, criteria=criteria,
                     )
             else:
                 discovery, fetched, interrupted = _observe_and_fetch(
-                    source, manifest, config=config, window=window,
+                    source, manifest, config=config, window=discovery_window,
                     watched=watched, criteria=criteria,
                 )
 
@@ -173,14 +190,17 @@ def execute_run(
                 manifest,
                 documents_root=config.documents_root,
                 inbox_root=config.inbox_root,
-                window=window,
+                window=retention_window,
             )
-            inbox = regenerate(manifest, inbox_root=config.inbox_root, window=window)
+            inbox = regenerate(
+                manifest, inbox_root=config.inbox_root, window=retention_window
+            )
         finally:
             connection.close()
 
     report = RunReport(
-        window=window,
+        retention_window=retention_window,
+        discovery_window=discovery_window,
         reconciled=reconciled,
         registry_error=registry_error,
         discovery=discovery,

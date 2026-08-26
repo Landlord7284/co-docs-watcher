@@ -121,6 +121,44 @@ def test_the_sweep_covers_the_whole_window_never_an_increment(config: Config) ->
     assert source.requested == [expected, expected]
 
 
+def test_a_monitor_run_narrows_the_sweep_and_nothing_else(config: Config) -> None:
+    """The monitor asks the source for its own days while purge and the inbox keep acting
+    on the retention frontier — one window for the sweep, the other for everything."""
+    delivered_before_monitor = TODAY - timedelta(days=5)
+    document = make_document(delivery_date=delivered_before_monitor)
+    source = FakeSource([document])
+    run(config, source)
+    archived = (
+        config.documents_root
+        / delivered_before_monitor.isoformat()
+        / "PETR"
+        / "Fato-Relevante_160310_V01.pdf"
+    )
+    assert archived.is_file()
+    stale_day = TODAY - timedelta(days=30)
+    stale_index = config.inbox_root / f"{stale_day.isoformat()}.md"
+    stale_index.write_text("stale\n", encoding="utf-8")
+
+    report = run(config, source, monitor=True)
+
+    assert source.requested[-1] == [TODAY, TODAY - timedelta(days=1)]
+    assert report.discovery_window.days == 2
+    assert report.retention_window.days == 7
+    # The retention frontier still did its work: the stale index went, the document —
+    # inside retention, outside the monitor window — kept its file and its index.
+    assert not stale_index.exists()
+    assert archived.is_file()
+    assert (config.inbox_root / f"{delivered_before_monitor.isoformat()}.md").is_file()
+
+
+def test_matched_windows_make_a_run_indistinguishable_from_todays(config: Config) -> None:
+    source = FakeSource([])
+    report = run(config, source)
+    expected = [TODAY - timedelta(days=offset) for offset in range(7)]
+    assert source.requested == [expected]
+    assert report.discovery_window == report.retention_window
+
+
 def test_a_second_run_downloads_nothing_and_leaves_the_inbox_alone(config: Config) -> None:
     document = make_document(delivery_date=TODAY)
     source = FakeSource([document])
