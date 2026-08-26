@@ -13,6 +13,7 @@ from co_docs_watcher.config import (
     DEFAULT_LOG_MAX_BYTES,
     DEFAULT_MAX_REQUESTS_PER_RUN,
     DEFAULT_MIN_REQUEST_INTERVAL,
+    DEFAULT_MONITOR_DAYS,
     DEFAULT_REGISTRY_MAX_AGE_DAYS,
     DEFAULT_RETENTION_DAYS,
     DEFAULT_TIMEZONE,
@@ -101,6 +102,54 @@ def test_documented_defaults_apply_when_the_file_omits_them(tmp_path: Path) -> N
     assert config.min_request_interval == DEFAULT_MIN_REQUEST_INTERVAL
     assert config.max_requests_per_run == DEFAULT_MAX_REQUESTS_PER_RUN
     assert config.registry_max_age_days == DEFAULT_REGISTRY_MAX_AGE_DAYS
+    assert config.discovery_days == DEFAULT_RETENTION_DAYS
+    assert config.monitor_days == DEFAULT_MONITOR_DAYS
+
+
+def test_discovery_days_follows_retention_when_unset(tmp_path: Path) -> None:
+    write(tmp_path / "config.toml", VALID + "[retention]\ndays = 10\n")
+    config = load_config(env={}, cwd=tmp_path, home=tmp_path)
+    assert config.discovery_days == 10
+    assert config.sweep_days(monitor=False) == 10
+    assert config.sweep_days(monitor=True) == DEFAULT_MONITOR_DAYS
+
+
+def test_a_one_day_archive_needs_no_discovery_section(tmp_path: Path) -> None:
+    """The monitor_days default accommodates the window; only a written value is refused."""
+    write(tmp_path / "config.toml", VALID + "[retention]\ndays = 1\n")
+    config = load_config(env={}, cwd=tmp_path, home=tmp_path)
+    assert config.discovery_days == 1
+    assert config.monitor_days == 1
+
+
+def test_the_discovery_section_settles_both_sweep_widths(tmp_path: Path) -> None:
+    write(
+        tmp_path / "config.toml",
+        VALID + "[retention]\ndays = 10\n[discovery]\ndays = 5\nmonitor_days = 3\n",
+    )
+    config = load_config(env={}, cwd=tmp_path, home=tmp_path)
+    assert config.sweep_days(monitor=False) == 5
+    assert config.sweep_days(monitor=True) == 3
+
+
+@pytest.mark.parametrize(
+    ("content", "match"),
+    [
+        (VALID + "[discovery]\ndays = 9\n", r"exceeds \[retention\] days \(7\)"),
+        (
+            VALID + "[discovery]\ndays = 3\nmonitor_days = 4\n",
+            r"exceeds \[discovery\] days \(3\)",
+        ),
+        (VALID + "[discovery]\nmonitor_days = 0\n", "integer >= 1"),
+        (VALID + "[discovery]\nweeks = 1\n", r"unknown key\(s\) in \[discovery\]"),
+    ],
+)
+def test_a_disordered_discovery_window_refuses_to_start(
+    tmp_path: Path, content: str, match: str
+) -> None:
+    write(tmp_path / "config.toml", content)
+    with pytest.raises(ConfigError, match=match):
+        load_config(env={}, cwd=tmp_path, home=tmp_path)
 
 
 def test_values_from_the_file_win(tmp_path: Path) -> None:

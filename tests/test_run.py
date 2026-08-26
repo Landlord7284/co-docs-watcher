@@ -79,6 +79,8 @@ def config(tmp_path: Path) -> Config:
         log_backups=DEFAULT_LOG_BACKUPS,
         timezone=TIMEZONE,
         retention_days=7,
+        discovery_days=7,
+        monitor_days=2,
         min_request_interval=0.01,
         max_requests_per_run=200,
         registry_max_age_days=7,

@@ -46,6 +46,7 @@ __all__ = [
     "DEFAULT_LOG_MAX_BYTES",
     "DEFAULT_MAX_REQUESTS_PER_RUN",
     "DEFAULT_MIN_REQUEST_INTERVAL",
+    "DEFAULT_MONITOR_DAYS",
     "DEFAULT_REGISTRY_MAX_AGE_DAYS",
     "DEFAULT_RETENTION_DAYS",
     "DEFAULT_SOURCE_BASE_URL",
@@ -68,6 +69,10 @@ DEFAULT_SOURCE_BASE_URL = "https://www.rad.cvm.gov.br/ENETWeb/"
 
 #: Retained dates, counting today. ``first_retained_date = today - (N - 1)``.
 DEFAULT_RETENTION_DAYS = 7
+
+#: Days swept by ``run --monitor``, counting today. Two, because a document delivered late
+#: yesterday must still be caught by a monitor that last ran before it arrived.
+DEFAULT_MONITOR_DAYS = 2
 
 #: Seconds between requests. The backend behind the page drops under load; this is the floor.
 DEFAULT_MIN_REQUEST_INTERVAL = 15.0
@@ -105,6 +110,7 @@ _SCHEMA: dict[str, set[str]] = {
     "paths": {"data_root", "documents_root", "logs_root"},
     "logging": {"max_bytes", "backups"},
     "retention": {"days"},
+    "discovery": {"days", "monitor_days"},
     "registry": {"max_age_days"},
     "source": {"timezone", "min_request_interval", "max_requests_per_run", "base_url"},
 }
@@ -135,6 +141,8 @@ class Config:
     log_backups: int
     timezone: ZoneInfo
     retention_days: int
+    discovery_days: int
+    monitor_days: int
     min_request_interval: float
     max_requests_per_run: int
     registry_max_age_days: int
@@ -145,6 +153,15 @@ class Config:
     @property
     def timezone_name(self) -> str:
         return str(self.timezone.key)
+
+    def sweep_days(self, *, monitor: bool) -> int:
+        """How many days the requested profile sweeps.
+
+        The profile selects which configured integer becomes the discovery window and
+        nothing else — answered here so that no caller does the arithmetic, and no
+        ``if monitor:`` exists below the CLI.
+        """
+        return self.monitor_days if monitor else self.discovery_days
 
     @property
     def uses_builtin_defaults(self) -> bool:
@@ -240,6 +257,8 @@ def load_config(
             log_backups=DEFAULT_LOG_BACKUPS,
             timezone=_timezone(DEFAULT_TIMEZONE),
             retention_days=DEFAULT_RETENTION_DAYS,
+            discovery_days=DEFAULT_RETENTION_DAYS,
+            monitor_days=DEFAULT_MONITOR_DAYS,
             min_request_interval=DEFAULT_MIN_REQUEST_INTERVAL,
             max_requests_per_run=DEFAULT_MAX_REQUESTS_PER_RUN,
             registry_max_age_days=DEFAULT_REGISTRY_MAX_AGE_DAYS,
@@ -279,8 +298,16 @@ def _from_file(path: Path) -> Config:
     paths = _section(raw, "paths", path)
     logging_section = _section(raw, "logging", path)
     retention = _section(raw, "retention", path)
+    discovery = _section(raw, "discovery", path)
     registry = _section(raw, "registry", path)
     source = _section(raw, "source", path)
+
+    retention_days = _positive_int(
+        retention, "days", DEFAULT_RETENTION_DAYS, where="retention", path=path
+    )
+    discovery_days, monitor_days = _discovery_windows(
+        discovery, retention_days=retention_days, path=path
+    )
 
     return Config(
         data_root=_root_path(paths, "data_root", where="paths", path=path),
@@ -295,9 +322,9 @@ def _from_file(path: Path) -> Config:
         timezone=_timezone(
             _string(source, "timezone", DEFAULT_TIMEZONE, where="source", path=path)
         ),
-        retention_days=_positive_int(
-            retention, "days", DEFAULT_RETENTION_DAYS, where="retention", path=path
-        ),
+        retention_days=retention_days,
+        discovery_days=discovery_days,
+        monitor_days=monitor_days,
         min_request_interval=_positive_float(
             source, "min_request_interval", DEFAULT_MIN_REQUEST_INTERVAL, where="source", path=path
         ),
@@ -337,6 +364,41 @@ def _reject_unknown_keys(raw: Mapping[str, Any], path: Path) -> None:
         unknown = sorted(set(section) - allowed)
         if unknown:
             raise ConfigError(f"{path}: unknown key(s) in [{name}]: {', '.join(unknown)}")
+
+
+def _discovery_windows(
+    section: Mapping[str, Any], *, retention_days: int, path: Path
+) -> tuple[int, int]:
+    """The two sweep widths, ordered ``1 <= monitor_days <= days <= retention.days``.
+
+    ``days`` follows ``retention.days`` when unset, so a file that names neither keeps a
+    single window. The upper bound is refused rather than warned about: a discovery window
+    wider than retention downloads on Wednesday what purge deleted on Tuesday, every week,
+    forever. ``_positive_int`` supplies the lower bound.
+    """
+    discovery_days = _positive_int(
+        section, "days", retention_days, where="discovery", path=path
+    )
+    # The default accommodates a narrow window — a one-day archive names no monitor_days and
+    # must stay valid — but only the default: a written value is validated, never clamped.
+    monitor_days = _positive_int(
+        section,
+        "monitor_days",
+        min(DEFAULT_MONITOR_DAYS, discovery_days),
+        where="discovery",
+        path=path,
+    )
+    if discovery_days > retention_days:
+        raise ConfigError(
+            f"{path}: [discovery] days ({discovery_days}) exceeds [retention] days "
+            f"({retention_days}): a sweep wider than retention re-downloads what purge deletes"
+        )
+    if monitor_days > discovery_days:
+        raise ConfigError(
+            f"{path}: [discovery] monitor_days ({monitor_days}) exceeds [discovery] days "
+            f"({discovery_days}): the monitor is the narrower profile"
+        )
+    return discovery_days, monitor_days
 
 
 def _prefix_overrides(section: Mapping[str, Any], *, path: Path) -> dict[str, str]:
