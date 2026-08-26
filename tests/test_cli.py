@@ -9,12 +9,16 @@ mode reaches the operator as the documented number.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from co_docs_watcher import cli
 from co_docs_watcher.config import load_config
+from co_docs_watcher.errors import ExitCode
 from co_docs_watcher.lock import RunLock
 from co_docs_watcher.manifest.db import open_manifest
 from co_docs_watcher.manifest.repo import AttemptOutcome, Manifest
@@ -88,6 +92,30 @@ def test_no_flag_leaks_an_internal_name_into_the_help_text() -> None:
                 assert action.metavar is not None, (
                     f"{action.option_strings} would show as {action.dest.upper()}"
                 )
+
+
+def test_run_carries_a_profile_flag_and_never_a_number() -> None:
+    parser = cli.build_parser()
+    assert parser.parse_args(["run", "--monitor"]).monitor is True
+    assert parser.parse_args(["run"]).monitor is False
+    # The cron line says which profile, never how many days: retuning is a config edit.
+    with pytest.raises(SystemExit):
+        parser.parse_args(["run", "--discovery-days", "3"])
+
+
+def test_run_hands_the_profile_to_execute_run(
+    config_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profiles: list[bool] = []
+
+    def record(config: object, *, monitor: bool = False) -> object:
+        profiles.append(monitor)
+        return SimpleNamespace(exit_code=ExitCode.CLEAN)
+
+    monkeypatch.setattr(cli, "execute_run", record)
+    assert cli.main(["--config", str(config_file), "run"]) == 0
+    assert cli.main(["--config", str(config_file), "run", "--monitor"]) == 0
+    assert profiles == [False, True]
 
 
 def test_the_query_is_one_thing_spelled_one_way() -> None:
@@ -218,6 +246,41 @@ def test_status_speaks_before_any_run_has_happened(
     out = capsys.readouterr().out
     assert "watched companies: 0" in out
     assert "no run has completed" in out
+
+
+def _source_today() -> tuple[str, str, str]:
+    """Today, yesterday, and the first retained day, read the way the watcher reads them."""
+    today = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
+    return str(today), str(today - timedelta(days=1)), str(today - timedelta(days=6))
+
+
+def test_doctor_shows_which_window_each_profile_sweeps(
+    config_file: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The configuration is verifiable without spending a sweep on it."""
+    monkeypatch.setattr(cli, "probe_source", lambda config: "probed without the network")
+    assert cli.main(["--config", str(config_file), "doctor"]) == 0
+
+    out = capsys.readouterr().out
+    today, yesterday, week_first = _source_today()
+    assert f"discovery window: {week_first} .. {today} (7 dates), swept by `run`" in out
+    assert (
+        f"monitor window: {yesterday} .. {today} (2 dates), swept by `run --monitor`" in out
+    )
+
+
+def test_status_labels_retention_and_reports_both_discovery_windows(
+    config_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["--config", str(config_file), "status"]) == 0
+
+    out = capsys.readouterr().out
+    today, yesterday, week_first = _source_today()
+    assert f"retention window: {week_first} .. {today} (7 dates)" in out
+    assert f"discovery window: {week_first} .. {today} (7 dates), swept by `run`" in out
+    assert (
+        f"monitor window: {yesterday} .. {today} (2 dates), swept by `run --monitor`" in out
+    )
 
 
 def test_status_explains_why_each_pending_document_is_pending(

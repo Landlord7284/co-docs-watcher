@@ -169,6 +169,27 @@ def test_a_second_run_with_nothing_new_is_fully_idempotent(site: Site) -> None:
     assert site.archive_snapshot() == snapshot
 
 
+def test_a_monitor_run_sweeps_two_days_and_touches_no_other(site: Site) -> None:
+    """A document delivered inside retention but before the monitor window survives a
+    monitor run — neither purged nor dropped from its day's index."""
+    older_day = TODAY - timedelta(days=2)
+    site.server.scenario.documents += [
+        ServedDocument(document_id=107, delivery=older_day, subject="De anteontem")
+    ]
+    assert site.cli("run") == 0
+    older_index = site.inbox(older_day).read_bytes()
+    site.server.listing_requests.clear()
+
+    site.server.scenario.documents += [pdf_today()]
+    assert site.cli("run", "--monitor") == 0
+
+    assert site.server.listing_requests == [TODAY, YESTERDAY]
+    assert (site.day_dir(TODAY) / "PETR" / "Fato-Relevante_101_V01.pdf").is_file()
+    assert (site.day_dir(older_day) / "PETR" / "Fato-Relevante_107_V01.pdf").is_file()
+    assert site.inbox(older_day).read_bytes() == older_index
+    assert site.manifest().documents.require((107, 1)).local_state is LocalState.AVAILABLE
+
+
 def test_a_resubmission_replaces_the_file_and_keeps_the_row(site: Site) -> None:
     original = ServedDocument(document_id=103, delivery=TODAY, subject="Primeira entrega")
     site.server.scenario.documents.append(original)

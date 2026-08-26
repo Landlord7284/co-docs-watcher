@@ -26,7 +26,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from co_docs_watcher import __version__
-from co_docs_watcher.clock import Clock
+from co_docs_watcher.clock import Clock, window_ending
 from co_docs_watcher.config import Config, load_config
 from co_docs_watcher.cvm.cache import RegistryCache
 from co_docs_watcher.cvm.registry import Registry, RegistryRecord
@@ -134,7 +134,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _query_arguments(resolve_)
 
-    _command(commands, "run", _cmd_run, "one complete pass: the canonical mode")
+    run = _command(commands, "run", _cmd_run, "one complete pass: the canonical mode")
+    # A profile, never a number: the cron line carries which profile sweeps, and retuning a
+    # window is a configuration edit, not a crontab edit.
+    run.add_argument(
+        "--monitor",
+        action="store_true",
+        help="sweep the narrow discovery.monitor_days window instead of discovery.days",
+    )
     _command(commands, "reconcile", _cmd_reconcile, "repair what an interrupted run left")
     _command(commands, "purge", _cmd_purge, "delete what aged out of the window")
     _command(commands, "status", _cmd_status, "what the archive holds, without touching it")
@@ -186,6 +193,8 @@ def _cmd_doctor(config: Config, args: argparse.Namespace) -> ExitCode:
     findings.append(_root_finding("documents root", config.documents_root))
     findings.append(_root_finding("logs root", config.logs_root))
     findings.append((True, f"timezone: {config.timezone_name}"))
+    for finding in _window_findings(config):
+        findings.append((True, finding))
 
     try:
         companies = WatchList.load(config.watch_list_path).companies
@@ -218,6 +227,26 @@ def _cmd_doctor(config: Config, args: argparse.Namespace) -> ExitCode:
     if all(good for good, _ in findings):
         return ExitCode.CLEAN
     return ExitCode.PARTIAL_FAILURE
+
+
+def _window_findings(config: Config) -> list[str]:
+    """The two discovery windows, resolved against today, each named after its profile.
+
+    Printed so that which days each of ``run`` and ``run --monitor`` sweeps is verifiable
+    without spending a sweep on it.
+    """
+    today = Clock.installed().today()
+    lines = []
+    for label, days, command in (
+        ("discovery window", config.discovery_days, "run"),
+        ("monitor window", config.monitor_days, "run --monitor"),
+    ):
+        window = window_ending(today, days)
+        lines.append(
+            f"{label}: {window.first} .. {window.last} "
+            f"({window.days} dates), swept by `{command}`"
+        )
+    return lines
 
 
 def _root_finding(label: str, root: Path) -> tuple[bool, str]:
@@ -288,7 +317,7 @@ def _cmd_rm(config: Config, args: argparse.Namespace) -> ExitCode:
 
 
 def _cmd_run(config: Config, args: argparse.Namespace) -> ExitCode:
-    return execute_run(config).exit_code
+    return execute_run(config, monitor=args.monitor).exit_code
 
 
 def _cmd_reconcile(config: Config, args: argparse.Namespace) -> ExitCode:
@@ -339,7 +368,9 @@ def _cmd_status(config: Config, args: argparse.Namespace) -> ExitCode:
     print(f"log file: {config.log_path}")
     print(f"timezone: {config.timezone_name}")
     window = Clock.installed().window(config.retention_days)
-    print(f"window: {window.first} .. {window.last} ({window.days} dates)")
+    print(f"retention window: {window.first} .. {window.last} ({window.days} dates)")
+    for line in _window_findings(config):
+        print(line)
     print(f"watched companies: {len(WatchList.load(config.watch_list_path).companies)}")
 
     if not config.manifest_path.exists():
