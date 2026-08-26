@@ -271,3 +271,19 @@ def test_an_ad_hoc_command_keeps_the_exit_code_it_earned(stubs: Path, tmp_path: 
     # Unmapped, unlike the scheduled path: someone typed this and is owed the truth that a
     # run was already in flight.
     assert result.returncode == int(ExitCode.LOCK_HELD)
+
+
+# --- the mounted configuration ------------------------------------------------------------
+
+
+def test_a_configuration_that_is_not_a_file_refuses_to_start(stubs: Path, tmp_path: Path) -> None:
+    # Docker creates a directory where a bind mount's source is missing, so this is what a
+    # first start without the copy step actually looks like from inside the container.
+    mounted = tmp_path / "config.toml"
+    mounted.mkdir()
+
+    result = invoke(ENTRYPOINT, stubs=stubs, tmp_path=tmp_path, CO_WATCHER_CONFIG=str(mounted))
+
+    assert result.returncode == int(ExitCode.INVALID_CONFIG)
+    assert "config.example.toml" in result.stderr
+    assert calls(tmp_path) == []

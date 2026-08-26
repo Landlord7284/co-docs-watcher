@@ -56,6 +56,17 @@ if [ -n "${PGID:-}" ] && [ "${PGID}" != "$(id -g)" ]; then
     warn "PGID=${PGID} ignored: the container was started as gid $(id -g)"
 fi
 
+# --- the configuration ------------------------------------------------------------------
+#
+# Checked here rather than left to the CLI because of how this one fails: Docker creates a
+# *directory* where a bind mount's source is missing, so a first start without the copy step
+# mounts an empty directory over the configuration file and every command below reports
+# something other than the mistake that was made.
+config=${CO_WATCHER_CONFIG:-}
+if [ -n "$config" ] && [ ! -f "$config" ]; then
+    fail "$config is not a file: copy docker/config.example.toml to docker/config.toml"
+fi
+
 # --- ad-hoc commands --------------------------------------------------------------------
 if [ "$#" -gt 0 ] && [ "$1" != "scheduler" ]; then
     exec co-docs-watcher "$@"

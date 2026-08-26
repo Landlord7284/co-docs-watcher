@@ -324,6 +324,11 @@ decision you have to see.
 
 ### The configuration inside the container
 
+Copy it before the first start. Docker creates a *directory* where a bind mount's source is
+missing, so a container started without the copy would mount an empty directory over its own
+configuration file; the entrypoint refuses to start on that rather than letting every command
+report something other than the mistake that was made.
+
 `docker/config.toml` is a file of its own, separate from the `config.toml` a hand-run uses,
 because the roots differ — inside the container they are the three mount points, and a
 relative root would resolve against `/config`, the directory of the file naming them.
