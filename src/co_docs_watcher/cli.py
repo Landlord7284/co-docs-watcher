@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -193,6 +194,7 @@ def _cmd_doctor(config: Config, args: argparse.Namespace) -> ExitCode:
     findings.append(_root_finding("documents root", config.documents_root))
     findings.append(_root_finding("logs root", config.logs_root))
     findings.append((True, f"timezone: {config.timezone_name}"))
+    findings.append(_process_zone_finding(config))
     for finding in _window_findings(config):
         findings.append((True, finding))
 
@@ -247,6 +249,26 @@ def _window_findings(config: Config) -> list[str]:
             f"({window.days} dates), swept by `{command}`"
         )
     return lines
+
+
+def _process_zone_finding(config: Config) -> tuple[bool, str]:
+    """Compare ``$TZ`` against ``source.timezone``, which is what the schedule fires in.
+
+    Reported here because that is where the derivation becomes verifiable: the container
+    exports ``TZ`` from ``source.timezone``, and a run that disagrees with it would fire the
+    schedule in one zone while writing the archive in another. Nothing in the package reads
+    ``TZ``, so an absent one costs nothing and says so.
+    """
+    process_zone = os.environ.get("TZ", "").strip()
+    if not process_zone:
+        return True, "process TZ: unset (nothing here reads it; a scheduler would use UTC)"
+    if process_zone == config.timezone_name:
+        return True, f"process TZ: {process_zone} (matches source.timezone)"
+    return False, (
+        f"process TZ: {process_zone} contradicts source.timezone={config.timezone_name}: "
+        f"a schedule read from TZ fires in {process_zone} while the archive is written in "
+        f"{config.timezone_name}"
+    )
 
 
 def _root_finding(label: str, root: Path) -> tuple[bool, str]:

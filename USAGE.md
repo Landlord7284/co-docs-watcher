@@ -102,13 +102,13 @@ Exit code `4` is not a transient failure: retrying makes it worse.
 ### `doctor`
 
 Checks everything a run depends on and prints one line per finding: the configuration file
-in use, the roots (created if missing, probed for writability), the timezone, both
-resolved discovery windows — first date, last date, day count, and which of `run` and
-`run --monitor` sweeps each, so the configuration is verifiable without spending a sweep
-on it — the watch list, the registry cache age, and the source (one real listing request
-for today). Exits
-`0` when everything passed, `1` when something failed, `4` when the source demanded a
-captcha.
+in use, the roots (created if missing, probed for writability), `source.timezone` and the
+zone the process itself is running in — which is how the container's derived `TZ` is checked
+without exec'ing into it — both resolved discovery windows, first date, last date, day count,
+and which of `run` and `run --monitor` sweeps each, so the configuration is verifiable
+without spending a sweep on it, the watch list, the registry cache age, and the source (one
+real listing request for today). Exits `0` when everything passed, `1` when something failed,
+`4` when the source demanded a captcha.
 
 ### `add QUERY` / `add --ticker T | --cvm-code C | --cnpj N | --name TEXT`
 
@@ -291,7 +291,6 @@ that one, so `1`, `2` and `4` still reach whoever watches the container.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `TZ` | unset (UTC) | the zone the **crontab** is read in |
 | `MONITOR_SCHEDULE` | `0 7-23 * * *` | when `run --monitor` fires |
 | `MONITOR_ENABLED` | `true` | `false` omits the monitor's crontab line |
 | `SWEEP_SCHEDULE` | `10 5 * * *` | when `run` fires |
@@ -306,11 +305,28 @@ Every variable is defaulted only when **unset**. `SWEEP_ENABLED=` is a line some
 purpose, and the container refuses to start rather than read it as `true`. So does a
 container with both profiles disabled, which would schedule nothing at all.
 
-`TZ` exists for cron, not for the application. The watcher anchors every date it writes —
-directory names, the retention frontier, the inbox, the watermark, log timestamps — on
-`source.timezone`, and is immune to the host zone. The crontab is not: **without `TZ` the
-container runs UTC**, and `0 7-23` fires from 04:00 to 20:00 in São Paulo, stopping the
-monitor four hours before the source does. An unset `TZ` is warned about at start.
+**There is no `TZ` here.** `source.timezone` in `config.toml` is the project's only
+declaration of a zone, and the entrypoint exports `TZ` from it before it does anything else.
+The watcher anchors every date it writes — directory names, the retention frontier, the
+inbox, the watermark, log timestamps — on that value and is immune to the host zone; the
+crontab is not, and left to itself it would run UTC, firing `0 7-23` from 04:00 to 20:00 in
+São Paulo and stopping the monitor four hours before the source does. Deriving it is what
+keeps the zone the schedule fires in and the zone the archive is written in the same answer
+to the same question.
+
+Four things are refused rather than guessed at, all with exit `2`:
+
+| Refusal | Why |
+|---|---|
+| `CO_WATCHER_CONFIG` empty or naming something that is not a file | resolving it here would be a second copy of the CLI's discovery chain |
+| `[source]` declaring no `timezone` | the shell carries no default of its own; `config.example.toml` ships the value |
+| a zone the system zone database does not have | the scheduler resolves the name there, and falls back to UTC in silence |
+| a `TZ` in the environment that contradicts `source.timezone` | two answers to one question, and the schedule and the archive would part ways |
+
+A `TZ` that *agrees* is redundant and accepted — orchestrators inject one unasked, and a
+value that says what `source.timezone` already says is not a second answer. `doctor` prints
+the process zone beside `source.timezone`, so the derivation is verifiable without exec'ing
+into the container.
 
 `RUN_ON_START` is the full sweep because a container start usually follows a restart, an
 update or downtime — the gap case exactly, which the monitor's two days cannot see. A

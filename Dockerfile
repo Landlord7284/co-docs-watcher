@@ -34,7 +34,8 @@ RUN set -eu; \
 FROM python:3.12-slim
 
 # tzdata for the scheduler's TZ — the watcher carries its own through the dependency of the
-# same name, but cron's idea of 07:00 comes from the system zone database.
+# same name, but cron's idea of 07:00 comes from the system zone database, and the entrypoint
+# refuses to start on a source.timezone that database does not have.
 RUN set -eu; \
     apt-get update; \
     apt-get install -y --no-install-recommends tzdata; \
@@ -48,7 +49,7 @@ COPY pyproject.toml LICENSE ./
 COPY src ./src
 RUN pip install --no-cache-dir .
 
-COPY docker/entrypoint.sh docker/run-profile.sh /usr/local/bin/
+COPY docker/entrypoint.sh docker/run-profile.sh docker/config-timezone.py /usr/local/bin/
 
 # One configuration file, mounted: the project's own. The container is shaped like a checkout
 # — config.toml with var/ beside it — so the file a hand-run reads and the file the scheduler

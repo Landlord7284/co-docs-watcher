@@ -74,6 +74,9 @@ max_age_days = 7
 # Anchors "today", the date directories, the retention frontier, and the log timestamps.
 # Always the timezone of the source, never that of the host. An unknown name refuses to
 # start instead of falling back.
+#
+# This is the project's only declaration of a zone: the container exports TZ from it, so the
+# hours its schedule fires in are read here too, and cannot drift from the dates below.
 timezone = "America/Sao_Paulo"
 # Seconds between requests. The backend behind the page drops under load; this is a floor,
 # not a target.

@@ -258,6 +258,7 @@ def test_doctor_shows_which_window_each_profile_sweeps(
     config_file: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The configuration is verifiable without spending a sweep on it."""
+    monkeypatch.delenv("TZ", raising=False)
     monkeypatch.setattr(cli, "probe_source", lambda config: "probed without the network")
     assert cli.main(["--config", str(config_file), "doctor"]) == 0
 
@@ -267,6 +268,43 @@ def test_doctor_shows_which_window_each_profile_sweeps(
     assert (
         f"monitor window: {yesterday} .. {today} (2 dates), swept by `run --monitor`" in out
     )
+
+
+def test_doctor_reports_the_zone_the_process_is_running_in(
+    config_file: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The container derives TZ from source.timezone, and this is where that is verifiable."""
+    monkeypatch.setattr(cli, "probe_source", lambda config: "probed without the network")
+    monkeypatch.setenv("TZ", "America/Sao_Paulo")
+
+    assert cli.main(["--config", str(config_file), "doctor"]) == 0
+
+    out = capsys.readouterr().out
+    assert "timezone: America/Sao_Paulo" in out
+    assert "process TZ: America/Sao_Paulo (matches source.timezone)" in out
+
+
+def test_doctor_says_nothing_is_reading_an_absent_tz(
+    config_file: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "probe_source", lambda config: "probed without the network")
+    monkeypatch.delenv("TZ", raising=False)
+
+    assert cli.main(["--config", str(config_file), "doctor"]) == 0
+    assert "process TZ: unset" in capsys.readouterr().out
+
+
+def test_doctor_fails_on_a_tz_that_contradicts_the_source_timezone(
+    config_file: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unreachable inside the container, and the only place a native install would see it."""
+    monkeypatch.setattr(cli, "probe_source", lambda config: "probed without the network")
+    monkeypatch.setenv("TZ", "Asia/Tokyo")
+
+    assert cli.main(["--config", str(config_file), "doctor"]) == int(ExitCode.PARTIAL_FAILURE)
+
+    out = capsys.readouterr().out
+    assert "FAIL  process TZ: Asia/Tokyo contradicts source.timezone=America/Sao_Paulo" in out
 
 
 def test_status_labels_retention_and_reports_both_discovery_windows(
