@@ -50,10 +50,10 @@ RUN pip install --no-cache-dir .
 
 COPY docker/entrypoint.sh docker/run-profile.sh /usr/local/bin/
 
-# The three roots are mount points, absolute and named by the mounted configuration file.
-# data_root is a mount of its own because SQLite locking over SMB/NFS is unreliable: it is
-# the one root that must land on a filesystem local to the host.
-ENV CO_WATCHER_CONFIG=/config/config.toml \
+# One configuration file, mounted: the project's own. The container is shaped like a checkout
+# — config.toml with var/ beside it — so the file a hand-run reads and the file the scheduler
+# reads are the same file, and the values that must not differ between them cannot.
+ENV CO_WATCHER_CONFIG=/watcher/config.toml \
     PYTHONUNBUFFERED=1
 
 # Root at rest, unprivileged at work: the entrypoint drops to PUID/PGID before it does

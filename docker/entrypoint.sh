@@ -64,7 +64,7 @@ fi
 # something other than the mistake that was made.
 config=${CO_WATCHER_CONFIG:-}
 if [ -n "$config" ] && [ ! -f "$config" ]; then
-    fail "$config is not a file: copy docker/config.example.toml to docker/config.toml"
+    fail "$config is not a file: copy config.example.toml to config.toml before the first start"
 fi
 
 # --- ad-hoc commands --------------------------------------------------------------------

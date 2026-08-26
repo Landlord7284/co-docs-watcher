@@ -8,9 +8,8 @@ tests
 .ruff_cache
 __pycache__
 *.egg-info
-# The local configurations, host and container alike: the container reads the one that is
-# mounted, and baking a copy into the image would archive against paths nobody chose.
+# The local configuration: the container reads the one that is mounted, and a copy baked into
+# the image would be a second answer to a question that must have one.
 /config.toml
 /co-docs-watcher.toml
-/docker/config.toml
 /.env

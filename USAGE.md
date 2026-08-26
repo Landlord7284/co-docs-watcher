@@ -232,8 +232,8 @@ never a dependency of it: the command it fires is the same one-shot a shell runs
 nothing in `src/` knows the container exists.
 
 ```bash
-cp .env.example .env                       # schedules, identity, the host paths
-cp docker/config.example.toml docker/config.toml   # windows, retention, modes
+cp config.example.toml config.toml   # windows, retention, modes — the same file a hand-run reads
+cp .env.example .env                 # schedules, identity, the host paths
 docker compose up -d --build
 ```
 
@@ -298,9 +298,9 @@ that one, so `1`, `2` and `4` still reach whoever watches the container.
 | `SWEEP_ENABLED` | `true` | `false` omits the sweep's line — and leaves the warning firing |
 | `RUN_ON_START` | `sweep` | `sweep`, `monitor` or `none`: what a container start runs |
 | `PUID` / `PGID` | `1000` | the identity the watcher runs as, and owns its files as |
-| `DATA_ROOT` | `./var/data` | host path mounted at `/data` — must be a **local** filesystem |
-| `DOCUMENTS_ROOT` | `./var/documents` | host path mounted at `/documents` — the share |
-| `LOGS_ROOT` | `./var/logs` | host path mounted at `/logs` |
+| `DATA_ROOT` | `./var/data` | host path mounted at `/watcher/var/data` — must be a **local** filesystem |
+| `DOCUMENTS_ROOT` | `./var/documents` | host path mounted at `/watcher/var/documents` — the share |
+| `LOGS_ROOT` | `./var/logs` | host path mounted at `/watcher/var/logs` |
 
 Every variable is defaulted only when **unset**. `SWEEP_ENABLED=` is a line someone wrote on
 purpose, and the container refuses to start rather than read it as `true`. So does a
@@ -322,18 +322,31 @@ whether the share can read the files at all. The entrypoint drops from root to t
 before it does anything else, and never chowns a mount: a mount whose owner is wrong is a
 decision you have to see.
 
-### The configuration inside the container
+### One configuration file
+
+There is no container configuration. `config.toml` — the file described under
+[Configuration](#configuration), the one a hand-run reads — is mounted into the container, and
+the container is shaped like a checkout so that it fits: the file at `/watcher/config.toml`,
+and the three host directories mounted at `/watcher/var/data`, `/watcher/var/documents` and
+`/watcher/var/logs`, which is exactly where its relative roots resolve.
+
+A second file would have duplicated everything *except* the paths — `retention`, `discovery`,
+`files`, `source` — and two copies of a value that must not differ is a way for it to differ.
+So the split is by question rather than by copy: `.env` names where the directories live on
+the **host** and when the profiles fire; `config.toml` names how far back to look, how long to
+keep, and which modes to write with, on either side of the mount.
 
 Copy it before the first start. Docker creates a *directory* where a bind mount's source is
 missing, so a container started without the copy would mount an empty directory over its own
 configuration file; the entrypoint refuses to start on that rather than letting every command
 report something other than the mistake that was made.
 
-`docker/config.toml` is a file of its own, separate from the `config.toml` a hand-run uses,
-because the roots differ — inside the container they are the three mount points, and a
-relative root would resolve against `/config`, the directory of the file naming them.
-Everything else is the same file described under [Configuration](#configuration); the
-container is where `[discovery]` and `[files]` earn their keep.
+The container filesystem is read-only apart from `/tmp` and the three mounts. That is what
+keeps a root the container cannot reach loud: roots written **absolute** — valid, and what a
+system-wide installation uses — do not land under `/watcher/var/`, and without the read-only
+filesystem the watcher would create them inside the container's own layer, archive into them,
+and lose the lot at the next `up --force-recreate`, with nothing to distinguish the result
+from a quiet market. Keep the roots relative, or mount them where the file says they are.
 
 `data_root` must be a filesystem local to the host: it holds the SQLite manifest, and SQLite
 locking over SMB/NFS is unreliable. `documents_root` is the one that belongs on the share.

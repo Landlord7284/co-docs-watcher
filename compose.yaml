@@ -4,15 +4,18 @@ services:
     image: co-docs-watcher:local
     restart: unless-stopped
     init: true
+    read_only: true
+    tmpfs:
+      - /tmp
     env_file: .env
     volumes:
-      - ./docker/config.toml:/config/config.toml:ro
+      - ./config.toml:/watcher/config.toml:ro
       # data_root: private state the watcher reads back — watch list, manifest, lock, FCA
       # cache. Must be a filesystem local to the host: SQLite locking over SMB/NFS is
       # unreliable, and this is the mount where that goes wrong first.
-      - ${DATA_ROOT:-./var/data}:/data
+      - ${DATA_ROOT:-./var/data}:/watcher/var/data
       # documents_root: the archive, which is what gets handed to people — a share, a sync,
       # a backup. The modes it is created with are declared in [files], not inherited.
-      - ${DOCUMENTS_ROOT:-./var/documents}:/documents
+      - ${DOCUMENTS_ROOT:-./var/documents}:/watcher/var/documents
       # logs_root: what an operator tails when the answer is not in the archive.
-      - ${LOGS_ROOT:-./var/logs}:/logs
+      - ${LOGS_ROOT:-./var/logs}:/watcher/var/logs
