@@ -62,11 +62,14 @@ if [ "$#" -gt 0 ] && [ "$1" != "scheduler" ]; then
 fi
 
 # --- the schedule -----------------------------------------------------------------------
-: "${MONITOR_SCHEDULE:=0 7-23 * * *}"
-: "${MONITOR_ENABLED:=true}"
-: "${SWEEP_SCHEDULE:=10 5 * * *}"
-: "${SWEEP_ENABLED:=true}"
-: "${RUN_ON_START:=sweep}"
+# Defaulted on unset and never on empty: `SWEEP_ENABLED=` in a .env file is a line someone
+# wrote on purpose, and reading it as the default would turn a half-finished edit into a
+# schedule nobody chose.
+MONITOR_SCHEDULE=${MONITOR_SCHEDULE-0 7-23 * * *}
+MONITOR_ENABLED=${MONITOR_ENABLED-true}
+SWEEP_SCHEDULE=${SWEEP_SCHEDULE-10 5 * * *}
+SWEEP_ENABLED=${SWEEP_ENABLED-true}
+RUN_ON_START=${RUN_ON_START-sweep}
 
 case "$RUN_ON_START" in
     none|sweep|monitor) ;;

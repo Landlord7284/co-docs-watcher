@@ -15,3 +15,15 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: ruff check src tests
       - run: pytest
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # The image is built here because it cannot fail quietly anywhere else: a Dockerfile
+      # that stopped building, or a pinned scheduler whose digest no longer matches what the
+      # release serves, would only be discovered by the next deployment.
+      - run: docker build --tag co-docs-watcher:ci .
+      # Any argument other than `scheduler` is the CLI itself, reached through the privilege
+      # drop the entrypoint performs before anything else runs.
+      - run: docker run --rm co-docs-watcher:ci --version
