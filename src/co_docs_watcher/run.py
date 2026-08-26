@@ -178,11 +178,13 @@ def execute_run(
                 with open_source(config) as built:
                     discovery, fetched, interrupted = _observe_and_fetch(
                         built, manifest, config=config, window=discovery_window,
+                        retention_window=retention_window,
                         watched=watched, criteria=criteria,
                     )
             else:
                 discovery, fetched, interrupted = _observe_and_fetch(
                     source, manifest, config=config, window=discovery_window,
+                    retention_window=retention_window,
                     watched=watched, criteria=criteria,
                 )
 
@@ -223,6 +225,7 @@ def _observe_and_fetch(
     *,
     config: Config,
     window: RetentionWindow,
+    retention_window: RetentionWindow,
     watched: tuple[WatchedCompany, ...],
     criteria: Callable[[SourceDocument], bool],
 ) -> tuple[DiscoveryOutcome | None, FetchOutcome | None, str | None]:
@@ -236,7 +239,12 @@ def _observe_and_fetch(
     fetched: FetchOutcome | None = None
     try:
         discovery = discover(
-            source, manifest, window=window, watched=watched, criteria=criteria
+            source,
+            manifest,
+            window=window,
+            retention_window=retention_window,
+            watched=watched,
+            criteria=criteria,
         )
     except (RequestBudgetExceededError, TransientSourceError) as error:
         logger.log(error.severity, "discovery did not complete: %s", error)

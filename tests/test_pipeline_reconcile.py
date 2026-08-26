@@ -268,7 +268,9 @@ def test_a_cancellation_observed_today_takes_the_file_with_it_today(
     assert placed.exists()
 
     cancelled = make_document(delivery_date=delivered, status=SourceStatus.CANCELLED)
-    discover(FakeSource([cancelled]), manifest, window=window, watched=(PETR,))
+    discover(
+        FakeSource([cancelled]), manifest, window=window, retention_window=window, watched=(PETR,)
+    )
     flags = enact_flags(manifest, documents_root=roots.documents_root)
 
     assert flags.identities == (document.identity,)

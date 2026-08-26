@@ -165,7 +165,7 @@ def test_a_purged_document_is_not_resurrected_by_the_next_sweep(
     run(manifest, roots, window)
 
     outcome = discover(
-        FakeSource(stray=[aged]), manifest, window=window, watched=(PETR,)
+        FakeSource(stray=[aged]), manifest, window=window, retention_window=window, watched=(PETR,)
     )
 
     assert outcome.queued == ()

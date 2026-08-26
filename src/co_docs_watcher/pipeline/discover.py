@@ -87,10 +87,17 @@ def discover(
     manifest: Manifest,
     *,
     window: RetentionWindow,
+    retention_window: RetentionWindow,
     watched: Iterable[WatchedCompany],
     criteria: Callable[[SourceDocument], bool] = archive_everything,
 ) -> DiscoveryOutcome:
-    """Sweep the window, filter it against the watch list, and merge what is left."""
+    """Sweep the discovery window, filter it against the watch list, and merge what is left.
+
+    ``retention_window`` comes alongside because the watermark is measured against it, not
+    against the days this sweep happened to cover: a sweep narrower than retention observes
+    nothing about the days it skipped, and asserting completed progress over them would
+    disarm the only gap alarm the system has.
+    """
     codes = {company.cvm_code for company in watched}
     if not codes:
         logger.warning("the watch list is empty; nothing to discover")
@@ -120,7 +127,7 @@ def discover(
         else:
             state.merge_flagged(document, _FLAG_FOR_STATUS[document.status])
 
-    _record_sweep(manifest, window)
+    _record_sweep(manifest, window, retention_window)
     outcome = state.outcome()
     logger.info(
         "discovery: %d rows, %d for watched companies, %d queued, %d deactivated, %d cancelled",
@@ -215,20 +222,35 @@ class _Merge:
         )
 
 
-def _record_sweep(manifest: Manifest, window: RetentionWindow) -> None:
-    """Move the watermark, and say so out loud when it had fallen behind the window.
+def _record_sweep(
+    manifest: Manifest, window: RetentionWindow, retention_window: RetentionWindow
+) -> None:
+    """Advance the watermark for a sweep that covered retention; only read it for one that
+    did not.
 
-    The watermark never feeds the interval — every run queries the whole window regardless. It
-    exists so that a gap can be *noticed*: if the last completed sweep predates the window, days
-    went by unobserved and whatever was published in them is not in this archive.
+    The watermark never feeds the interval — every run queries its whole window regardless.
+    It exists so that a gap can be *noticed*, and staleness is always measured against the
+    **retention** frontier: those are the days the archive promises to hold, whatever this
+    particular sweep asked for. It reuses ``sync_state``'s ``last_completed_sweep`` rather
+    than adding a key of its own because the meaning is unchanged — everything through this
+    date has been observed — and a second key would give one question two answers.
+
+    Only a sweep covering the retention window may write it. A narrower sweep observes
+    nothing about the days it skipped, and recording its last day would assert "everything
+    through today has been observed" over days that were never asked about — a gap alarm
+    permanently green over a rotting window. Whether the sweep covered retention is derived
+    from the windows, never from a profile flag. The intended consequence: stop running the
+    full sweep and the warning below fires every day — turning off full coverage is a
+    visible decision, not a silent omission.
     """
     previous = manifest.state.watermark()
-    if previous is not None and previous < window.first:
+    if previous is not None and previous < retention_window.first:
         logger.warning(
-            "the last completed sweep was %s, before the window starts (%s): %d day(s) were "
-            "never observed and are not in this archive",
+            "the last completed sweep was %s, before the retention window starts (%s): "
+            "%d day(s) were never observed and are not in this archive",
             previous,
-            window.first,
-            (window.first - previous).days,
+            retention_window.first,
+            (retention_window.first - previous).days,
         )
-    manifest.state.set_watermark(window.last)
+    if window.first <= retention_window.first:
+        manifest.state.set_watermark(window.last)

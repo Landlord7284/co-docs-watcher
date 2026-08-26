@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from co_docs_watcher.clock import RetentionWindow
+from co_docs_watcher.clock import RetentionWindow, window_ending
 from co_docs_watcher.cvm.search import MatchKind
 from co_docs_watcher.cvm.ticker import PrefixSource
 from co_docs_watcher.manifest.repo import Manifest
@@ -44,11 +44,19 @@ def sweep(
     manifest: Manifest,
     window: RetentionWindow,
     *documents: SourceDocument,
+    retention_window: RetentionWindow | None = None,
     watched: tuple[WatchedCompany, ...] = (PETR,),
     **kwargs: object,
 ) -> object:
     source = FakeSource(documents)
-    return discover(source, manifest, window=window, watched=watched, **kwargs)  # type: ignore[arg-type]
+    return discover(
+        source,
+        manifest,
+        window=window,
+        retention_window=window if retention_window is None else retention_window,
+        watched=watched,
+        **kwargs,  # type: ignore[arg-type]
+    )
 
 
 def test_a_new_active_document_is_queued_with_its_protocol(
@@ -68,7 +76,7 @@ def test_the_sweep_asks_for_every_day_of_the_window_once(
     manifest: Manifest, window: RetentionWindow
 ) -> None:
     source = FakeSource([make_document()])
-    discover(source, manifest, window=window, watched=(PETR,))
+    discover(source, manifest, window=window, retention_window=window, watched=(PETR,))
 
     assert source.requested == [window.dates_newest_first]
     assert len(window.dates) == 7
@@ -216,7 +224,9 @@ def test_a_row_delivered_outside_the_window_is_refused_loudly(
     source = FakeSource(stray=[stray])
 
     with caplog.at_level(logging.WARNING):
-        outcome = discover(source, manifest, window=window, watched=(PETR,))
+        outcome = discover(
+            source, manifest, window=window, retention_window=window, watched=(PETR,)
+        )
 
     assert outcome.out_of_window == 1
     assert manifest.documents.get(stray.identity) is None
@@ -226,7 +236,7 @@ def test_a_row_delivered_outside_the_window_is_refused_loudly(
 def test_an_empty_watch_list_makes_no_request(manifest: Manifest, window: RetentionWindow) -> None:
     source = FakeSource([make_document()])
 
-    outcome = discover(source, manifest, window=window, watched=())
+    outcome = discover(source, manifest, window=window, retention_window=window, watched=())
 
     assert source.requested == []
     assert outcome.observed == 0
@@ -261,3 +271,48 @@ def test_a_watermark_older_than_the_window_is_reported_as_unobserved_days(
 
     assert "never observed" in caplog.text
     assert manifest.state.watermark() == window.last
+
+
+def test_a_sweep_narrower_than_retention_never_writes_the_watermark(
+    manifest: Manifest, window: RetentionWindow
+) -> None:
+    """A monitor-width sweep observed nothing about the days it skipped; recording its last
+    day would assert completed progress over them and green the gap alarm for good."""
+    monitor = window_ending(TODAY, 2)
+
+    sweep(manifest, monitor, make_document(), retention_window=window)
+    assert manifest.state.watermark() is None
+
+    manifest.state.set_watermark(window.first)
+    sweep(manifest, monitor, make_document(), retention_window=window)
+    assert manifest.state.watermark() == window.first
+
+
+def test_a_monitor_sweep_still_warns_against_the_retention_frontier(
+    manifest: Manifest, window: RetentionWindow, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Staleness is measured against retention, never against the days this sweep asked for:
+    a watermark inside the monitor window can still be behind the archive's promise."""
+    stale = window.first - date.resolution * 3
+    manifest.state.set_watermark(stale)
+    monitor = window_ending(TODAY, 2)
+
+    with caplog.at_level(logging.WARNING):
+        sweep(manifest, monitor, make_document(), retention_window=window)
+
+    assert "never observed" in caplog.text
+    assert str(window.first) in caplog.text
+    assert manifest.state.watermark() == stale
+
+
+def test_a_watermark_behind_the_monitor_but_not_retention_is_quiet(
+    manifest: Manifest, window: RetentionWindow, caplog: pytest.LogCaptureFixture
+) -> None:
+    monitor = window_ending(TODAY, 2)
+    behind_monitor_only = monitor.first - date.resolution  # inside retention
+
+    manifest.state.set_watermark(behind_monitor_only)
+    with caplog.at_level(logging.WARNING):
+        sweep(manifest, monitor, make_document(), retention_window=window)
+
+    assert "never observed" not in caplog.text
