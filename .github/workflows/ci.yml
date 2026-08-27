@@ -27,5 +27,10 @@ jobs:
       # release serves, would only be discovered by the next deployment.
       - run: docker build --tag co-docs-watcher:ci .
       # Any argument other than `scheduler` is the CLI itself, reached through the privilege
-      # drop the entrypoint performs before anything else runs.
-      - run: docker run --rm co-docs-watcher:ci --version
+      # drop and the TZ derivation the entrypoint performs before anything else runs. The
+      # configuration is mounted because that derivation reads it: a container without one
+      # refuses to start, and the smoke test has to exercise the shape a deployment uses.
+      - run: |
+          docker run --rm \
+            --volume "${PWD}/config.example.toml:/watcher/config.toml:ro" \
+            co-docs-watcher:ci --version
