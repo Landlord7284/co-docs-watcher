@@ -35,11 +35,12 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class PurgeOutcome:
-    """What crossed the frontier."""
+    """What crossed the frontier, and what refused to."""
 
     purged: tuple[Identity, ...]
     removed_dates: tuple[date, ...]
     removed_indexes: tuple[date, ...]
+    unremoved_dates: tuple[date, ...] = ()
 
 
 def purge(
@@ -49,10 +50,15 @@ def purge(
     inbox_root: Path,
     window: RetentionWindow,
 ) -> PurgeOutcome:
-    """Delete every delivery date older than the window's first, on disk and in the manifest."""
-    removed_dates = _remove_expired_directories(documents_root, window)
+    """Delete every delivery date older than the window's first, on disk and in the manifest.
+
+    The disk goes first and the manifest follows it: a date whose directory could not be
+    removed keeps its rows, because the rows are the only record of where those files are and
+    forgetting them would leave the archive holding something nothing can find again.
+    """
+    removed_dates, unremoved_dates = _remove_expired_directories(documents_root, window)
     removed_indexes = _remove_expired_indexes(inbox_root, window)
-    purged = _purge_rows(manifest, window)
+    purged = _purge_rows(manifest, window, keeping=unremoved_dates)
 
     if purged or removed_dates or removed_indexes:
         logger.info(
@@ -63,18 +69,34 @@ def purge(
             window.first,
         )
     return PurgeOutcome(
-        purged=tuple(purged), removed_dates=removed_dates, removed_indexes=removed_indexes
+        purged=tuple(purged),
+        removed_dates=removed_dates,
+        removed_indexes=removed_indexes,
+        unremoved_dates=unremoved_dates,
     )
 
 
-def _remove_expired_directories(documents_root: Path, window: RetentionWindow) -> tuple[date, ...]:
+def _remove_expired_directories(
+    documents_root: Path, window: RetentionWindow
+) -> tuple[tuple[date, ...], tuple[date, ...]]:
+    """The dates whose directory is gone, and the dates whose directory refused to go.
+
+    A removal that fails is reported as a failure and never as a removal: the second return
+    value is what keeps the manifest from forgetting rows whose files are still on disk.
+    """
     removed = []
+    unremoved = []
     for day, path in sorted(_date_directories(documents_root)):
         if not window.is_expired(day):
             continue
-        shutil.rmtree(path, ignore_errors=True)
+        try:
+            shutil.rmtree(path)
+        except OSError as error:
+            logger.error("date directory %s aged out but cannot be removed: %s", path, error)
+            unremoved.append(day)
+            continue
         removed.append(day)
-    return tuple(removed)
+    return tuple(removed), tuple(unremoved)
 
 
 def _remove_expired_indexes(inbox_root: Path, window: RetentionWindow) -> tuple[date, ...]:
@@ -91,10 +113,20 @@ def _remove_expired_indexes(inbox_root: Path, window: RetentionWindow) -> tuple[
     return tuple(removed)
 
 
-def _purge_rows(manifest: Manifest, window: RetentionWindow) -> list[Identity]:
+def _purge_rows(
+    manifest: Manifest, window: RetentionWindow, *, keeping: tuple[date, ...] = ()
+) -> list[Identity]:
+    """Mark the aged-out rows purged, then forget their files — in that order.
+
+    The transition is what may be refused, so it happens first: forgetting the files of a
+    document that then fails to be purged would leave the row pointing at nothing and the
+    files unreachable. ``keeping`` holds the dates whose directory is still on disk.
+    """
+    kept = frozenset(keeping)
     purged = []
     for record in manifest.documents.delivered_before(window.first):
-        manifest.files.record_files(record.identity, ())
+        if record.document.delivery_date in kept:
+            continue
         try:
             manifest.documents.transition(record.identity, LocalState.PURGED)
         except IllegalTransitionError as error:
@@ -102,6 +134,7 @@ def _purge_rows(manifest: Manifest, window: RetentionWindow) -> list[Identity]:
             # this means the two steps disagree about the order of a run.
             logger.error("document %s aged out but cannot be purged: %s", record.identity, error)
             continue
+        manifest.files.record_files(record.identity, ())
         purged.append(record.identity)
     return purged
 

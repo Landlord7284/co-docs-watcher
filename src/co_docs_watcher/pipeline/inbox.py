@@ -60,6 +60,7 @@ class InboxOutcome:
     unchanged: tuple[date, ...]
     removed: tuple[date, ...]
     entries: int
+    refused: tuple[date, ...] = ()
 
 
 def regenerate(
@@ -78,6 +79,7 @@ def regenerate(
     written: list[date] = []
     unchanged: list[date] = []
     removed: list[date] = []
+    refused: list[date] = []
     entries = 0
 
     for day in window.dates:
@@ -87,17 +89,24 @@ def regenerate(
             if record.local_state in _REPORTED
         ]
         path = inbox_root / f"{directory_name(day)}.md"
-        if not records:
-            # Never invented: no rows, no index — and an index that outlived its rows goes.
-            if path.exists():
-                path.unlink()
-                removed.append(day)
+        try:
+            if not records:
+                # Never invented: no rows, no index — and an index that outlived its rows goes.
+                if path.exists():
+                    path.unlink(missing_ok=True)
+                    removed.append(day)
+                continue
+            if _write_if_changed(path, render_day(day, records), modes=modes):
+                written.append(day)
+            else:
+                unchanged.append(day)
+        except OSError as error:
+            # One unreadable or unwritable index costs its own day. Losing the rest of the
+            # window with it would be a reading queue that goes dark over one bad file.
+            logger.error("the index of %s could not be regenerated: %s", day, error)
+            refused.append(day)
             continue
         entries += len(records)
-        if _write_if_changed(path, render_day(day, records), modes=modes):
-            written.append(day)
-        else:
-            unchanged.append(day)
 
     logger.info(
         "inbox: %d day(s) rewritten, %d unchanged, %d removed, %d entries in the window",
@@ -106,19 +115,21 @@ def regenerate(
         len(removed),
         entries,
     )
-    return InboxOutcome(tuple(written), tuple(unchanged), tuple(removed), entries)
+    return InboxOutcome(
+        tuple(written), tuple(unchanged), tuple(removed), entries, tuple(refused)
+    )
 
 
 def render_day(day: date, records: list[DocumentRecord]) -> str:
     """One day's index: companies in name order, documents in a stable order under each."""
     lines = [f"# {directory_name(day)}", "", _PREAMBLE, ""]
-    for company in sorted({_company(record) for record in records}):
-        lines.append(f"## {company[0]}")
+    by_company: dict[tuple[str, str], list[DocumentRecord]] = {}
+    for record in records:
+        by_company.setdefault(_company(record), []).append(record)
+    for (legal_name, _), published in sorted(by_company.items()):
+        lines.append(f"## {legal_name}")
         lines.append("")
-        for record in sorted(
-            (record for record in records if _company(record) == company), key=_document_order
-        ):
-            lines.append(_entry(record))
+        lines.extend(_entry(record) for record in sorted(published, key=_document_order))
         lines.append("")
     return "\n".join(lines).rstrip("\n") + "\n"
 
@@ -167,7 +178,13 @@ def _write_if_changed(path: Path, content: str, *, modes: ArchiveModes) -> bool:
         return False
     ensure_directory(path.parent, modes)
     staging = path.with_name(path.name + ".part")
-    staging.write_text(content, encoding="utf-8")
-    stamp_file(staging, modes)
-    os.replace(staging, path)
+    try:
+        staging.write_text(content, encoding="utf-8")
+        stamp_file(staging, modes)
+        os.replace(staging, path)
+    except OSError:
+        # ``_inbox/`` is swept by name — purge only knows ``*.md`` — so a ``.part`` left by a
+        # failed write would sit there for good.
+        staging.unlink(missing_ok=True)
+        raise
     return True

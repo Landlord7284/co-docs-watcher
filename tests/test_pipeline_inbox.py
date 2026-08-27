@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import stat
 from collections.abc import Iterator
@@ -240,3 +241,33 @@ def test_the_index_and_its_directory_carry_the_configured_modes(
 
     assert stat.S_IMODE(index_of(roots).stat().st_mode) == 0o640
     assert stat.S_IMODE(roots.inbox_root.stat().st_mode) == 0o750
+
+
+def test_a_day_that_cannot_be_written_costs_its_own_day_and_no_other(
+    manifest: Manifest, roots: Roots, window: RetentionWindow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A reading queue that goes dark over one bad file is worse than one day missing from it.
+    yesterday = TODAY - timedelta(days=1)
+    archived(manifest, make_document(), Path(TODAY.isoformat()) / "PETR" / "today.pdf")
+    archived(
+        manifest,
+        make_document(document_id=160477, delivery_date=yesterday),
+        Path(yesterday.isoformat()) / "PETR" / "yesterday.pdf",
+    )
+    original = os.replace
+
+    def refuse_yesterday(source: object, target: object, *args: object, **kwargs: object):
+        if str(target).endswith(f"{yesterday.isoformat()}.md"):
+            raise OSError(errno.EIO, "Input/output error")
+        return original(source, target, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "replace", refuse_yesterday)
+
+    outcome = run(manifest, roots, window)
+
+    assert outcome.refused == (yesterday,)
+    assert TODAY in outcome.written
+    assert index_of(roots).exists()
+    assert not index_of(roots, yesterday.isoformat()).exists()
+    # ``_inbox/`` is swept by name and purge only knows ``*.md``: a leftover stays for good.
+    assert list(roots.inbox_root.glob("*.part")) == []

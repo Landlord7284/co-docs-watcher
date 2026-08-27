@@ -32,7 +32,11 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 from co_docs_watcher.clock import RetentionWindow
-from co_docs_watcher.errors import IllegalTransitionError
+from co_docs_watcher.errors import (
+    IllegalTransitionError,
+    ManifestError,
+    SourceContractError,
+)
 from co_docs_watcher.manifest.repo import Identity, Manifest
 from co_docs_watcher.models import LocalState, SourceDocument, SourceStatus
 from co_docs_watcher.scope.models import WatchedCompany
@@ -71,6 +75,7 @@ class DiscoveryOutcome:
     out_of_window: int
     unknown_inactive: int
     unchanged: int
+    refused: int
     queued: tuple[Identity, ...]
     skipped: tuple[Identity, ...]
     deactivated: tuple[Identity, ...]
@@ -101,31 +106,11 @@ def discover(
     codes = {company.cvm_code for company in watched}
     if not codes:
         logger.warning("the watch list is empty; nothing to discover")
-        return DiscoveryOutcome(0, 0, 0, 0, 0, (), (), (), ())
+        return DiscoveryOutcome(0, 0, 0, 0, 0, 0, (), (), (), ())
 
-    documents = source.list_window(window.dates_newest_first)
-    state = _Merge(manifest, criteria)
-    for document in documents:
-        state.observed += 1
-        if document.cvm_code not in codes:
-            state.ignored += 1
-            continue
-        if not window.contains(document.delivery_date):
-            # The delivery date is the archive's axis, and the sweep asked for these days by
-            # date: a row outside them would be filed where purge is about to delete it.
-            logger.warning(
-                "document %s was delivered on %s, outside the queried window %s..%s; ignored",
-                document.identity,
-                document.delivery_date,
-                window.first,
-                window.last,
-            )
-            state.out_of_window += 1
-            continue
-        if document.status is SourceStatus.ACTIVE:
-            state.merge_active(document)
-        else:
-            state.merge_flagged(document, _FLAG_FOR_STATUS[document.status])
+    state = _Merge(manifest, criteria, codes=codes, window=window)
+    for document in source.list_window(window.dates_newest_first):
+        state.observe(document)
 
     _record_sweep(manifest, window, retention_window)
     outcome = state.outcome()
@@ -141,20 +126,82 @@ def discover(
 
 
 class _Merge:
-    """The running result of one sweep. Split out so the merge rules read as rules."""
+    """One sweep's rules and its running result.
 
-    def __init__(self, manifest: Manifest, criteria: Callable[[SourceDocument], bool]) -> None:
+    Every row of the listing enters at :meth:`observe` and every count is kept here, so that
+    reading this class is reading what a sweep does to the manifest.
+    """
+
+    def __init__(
+        self,
+        manifest: Manifest,
+        criteria: Callable[[SourceDocument], bool],
+        *,
+        codes: set[str],
+        window: RetentionWindow,
+    ) -> None:
         self._manifest = manifest
         self._criteria = criteria
+        self._codes = codes
+        self._window = window
         self.observed = 0
         self.ignored = 0
         self.out_of_window = 0
         self.unknown_inactive = 0
         self.unchanged = 0
+        self.refused = 0
         self.queued: list[Identity] = []
         self.skipped: list[Identity] = []
         self.deactivated: list[Identity] = []
         self.cancelled: list[Identity] = []
+
+    def observe(self, document: SourceDocument) -> None:
+        """Count one row of the listing, and apply to it the rule its status calls for.
+
+        A row the manifest refuses is recorded and skipped rather than ending the sweep: an
+        isolated failure never kills the batch, and a sweep that dies on row 40 of 450 leaves
+        the day half-observed with nothing saying which half. The one thing not isolated is a
+        divergence in the wire format — ``SourceContractError`` is fatal to the batch on
+        purpose, because a partially understood payload is worse than none.
+        """
+        self.observed += 1
+        if document.cvm_code not in self._codes:
+            self.ignored += 1
+            return
+        if not self._window.contains(document.delivery_date):
+            # The delivery date is the archive's axis, and the sweep asked for these days by
+            # date: a row outside them would be filed where purge is about to delete it.
+            logger.warning(
+                "document %s was delivered on %s, outside the queried window %s..%s; ignored",
+                document.identity,
+                document.delivery_date,
+                self._window.first,
+                self._window.last,
+            )
+            self.out_of_window += 1
+            return
+        try:
+            self._merge(document)
+        except ManifestError as error:
+            logger.error(
+                "document %s was not merged into the manifest: %s", document.identity, error
+            )
+            self.refused += 1
+
+    def _merge(self, document: SourceDocument) -> None:
+        """Route one watched, in-window row to the rule that applies to its status."""
+        if document.status is SourceStatus.ACTIVE:
+            self.merge_active(document)
+            return
+        flag = _FLAG_FOR_STATUS.get(document.status)
+        if flag is None:
+            # The table is exhaustive over every status this build knows. A fourth one is the
+            # wire format having changed under us, and that is never a silent pass.
+            raise SourceContractError(
+                f"document {document.identity} arrived with status {document.status}, which "
+                "this build has no local state for"
+            )
+        self.merge_flagged(document, flag)
 
     def merge_active(self, document: SourceDocument) -> None:
         """Insert or refresh an active document, and re-evaluate it against the criteria."""
@@ -215,6 +262,7 @@ class _Merge:
             out_of_window=self.out_of_window,
             unknown_inactive=self.unknown_inactive,
             unchanged=self.unchanged,
+            refused=self.refused,
             queued=tuple(self.queued),
             skipped=tuple(self.skipped),
             deactivated=tuple(self.deactivated),

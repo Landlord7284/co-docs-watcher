@@ -79,15 +79,23 @@ class RunReport:
 
     @property
     def clean(self) -> bool:
-        """Whether nothing at all went wrong — the difference between exit 0 and exit 1."""
+        """Whether nothing at all went wrong — the difference between exit 0 and exit 1.
+
+        A row the manifest refused, a date directory that would not be deleted and an index
+        that could not be written are isolated failures like any other: the run carried on,
+        and the exit code is what says it was not a clean one.
+        """
         return (
             self.registry_error is None
             and self.interrupted is None
             and not self.reconciled.failed
             and self.discovery is not None
+            and not self.discovery.refused
             and self.fetch is not None
             and not self.fetch.failed
             and not self.fetch.retrying
+            and not self.purged.unremoved_dates
+            and not self.inbox.refused
         )
 
     @property

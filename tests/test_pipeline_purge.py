@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import errno
+import shutil
 from datetime import timedelta
 from pathlib import Path
+
+import pytest
 
 from co_docs_watcher.clock import RetentionWindow
 from co_docs_watcher.manifest.repo import FileRecord, Manifest
@@ -184,3 +188,34 @@ def test_purging_twice_changes_nothing_the_second_time(
 
     assert first.purged == (aged.identity,)
     assert second == type(second)((), (), ())
+
+
+def test_a_date_directory_that_cannot_be_removed_keeps_its_rows(
+    manifest: Manifest, roots: Roots, window: RetentionWindow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The rows are the only record of where those files are. Forgetting them while the files
+    # are still on disk leaves the archive holding something no later run can find again.
+    expired = window.first - timedelta(days=1)
+    document = make_document(delivery_date=expired)
+    path = archived(manifest, roots, document)
+
+    def unremovable(*args: object, **kwargs: object) -> None:
+        raise OSError(errno.EACCES, "Permission denied")
+
+    monkeypatch.setattr(shutil, "rmtree", unremovable)
+
+    outcome = run(manifest, roots, window)
+
+    assert outcome.removed_dates == ()
+    assert outcome.unremoved_dates == (expired,)
+    assert outcome.purged == ()
+    assert path.exists()
+    assert manifest.documents.require(document.identity).local_state is LocalState.AVAILABLE
+    assert manifest.files.files_for(document.identity) != []
+
+    monkeypatch.undo()
+    again = run(manifest, roots, window)
+
+    assert again.removed_dates == (expired,)
+    assert again.purged == (document.identity,)
+    assert manifest.documents.require(document.identity).local_state is LocalState.PURGED

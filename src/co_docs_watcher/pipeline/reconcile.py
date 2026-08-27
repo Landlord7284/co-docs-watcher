@@ -18,11 +18,13 @@ only property that makes it safe to run before every single run.
 
 from __future__ import annotations
 
+import errno
 import logging
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+from co_docs_watcher.errors import ManifestError
 from co_docs_watcher.manifest.repo import (
     AttemptOutcome,
     DocumentRecord,
@@ -80,11 +82,17 @@ def reconcile(
             manifest, record, documents_root=documents_root, max_attempts=max_attempts
         )
         removed_files += removed
-        {
+        bucket = {
             LocalState.AVAILABLE: recovered,
             LocalState.DISCOVERED: requeued,
             LocalState.FAILED: failed,
-        }[outcome].append(record.identity)
+        }.get(outcome)
+        if bucket is None:
+            raise ManifestError(
+                f"document {record.identity}: reconciliation left it {outcome}, which is not "
+                "one of the three states an in-flight download can resolve to"
+            )
+        bucket.append(record.identity)
 
     flags = enact_flags(manifest, documents_root=documents_root)
     enacted = list(flags.identities)
@@ -194,11 +202,17 @@ def _intact(files: list[FileRecord], *, documents_root: Path) -> bool:
 def _remove_recorded_files(
     manifest: Manifest, record: DocumentRecord, *, documents_root: Path
 ) -> int:
-    """Delete the files a document left behind and forget them. Safe to repeat."""
+    """Delete the files a document left behind and forget them. Safe to repeat.
+
+    Only what actually left the disk is forgotten. A file whose removal failed keeps its row,
+    because the row is the only thing that knows where it is: dropping it would leave the
+    archive holding a file no later run can find, and the retry costs one ``unlink``.
+    """
     files = manifest.files.files_for(record.identity)
     if not files:
         return 0
     removed = 0
+    survivors: list[FileRecord] = []
     for entry in files:
         path = documents_root / entry.relative_path
         try:
@@ -208,9 +222,10 @@ def _remove_recorded_files(
             pass
         except OSError as error:
             logger.error("document %s: %s cannot be removed: %s", record.identity, path, error)
+            survivors.append(entry)
             continue
         _prune_empty_parents(path.parent, documents_root=documents_root)
-    manifest.files.record_files(record.identity, ())
+    manifest.files.record_files(record.identity, survivors)
     return removed
 
 
@@ -221,7 +236,11 @@ def _prune_empty_parents(directory: Path, *, documents_root: Path) -> None:
     while current != root and root in current.parents:
         try:
             current.rmdir()
-        except OSError:
+        except OSError as error:
+            # A directory that still holds documents is where the walk is supposed to stop.
+            # Anything else — a permission, a busy mount — is not, and goes on the record.
+            if error.errno not in (errno.ENOTEMPTY, errno.EEXIST):
+                logger.error("%s could not be pruned: %s", current, error)
             return
         current = current.parent
 
@@ -236,9 +255,15 @@ def _discard_staging(staging_root: Path) -> int:
         return 0
     discarded = 0
     for entry in staging_root.iterdir():
-        if entry.is_dir():
-            shutil.rmtree(entry, ignore_errors=True)
-        else:
-            entry.unlink(missing_ok=True)
+        try:
+            if entry.is_dir():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            logger.warning("staging leftover %s could not be discarded: %s", entry, error)
+            continue
         discarded += 1
     return discarded

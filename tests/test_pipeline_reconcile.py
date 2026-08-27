@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 from datetime import timedelta
 from pathlib import Path
+
+import pytest
 
 from co_docs_watcher.clock import RetentionWindow
 from co_docs_watcher.manifest.repo import FileRecord, Manifest
@@ -276,3 +279,31 @@ def test_a_cancellation_observed_today_takes_the_file_with_it_today(
     assert flags.identities == (document.identity,)
     assert not placed.exists()
     assert manifest.documents.require(document.identity).local_state is LocalState.CANCELLED
+
+
+def test_a_file_that_cannot_be_removed_keeps_the_row_that_knows_where_it_is(
+    manifest: Manifest, roots: Roots, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Dropping the row of a file that is still on disk strands it: nothing else records where
+    # it is. The row stays, and the next run tries the removal again.
+    document = make_document()
+    archived(manifest, roots, document)
+    manifest.documents.transition(document.identity, LocalState.CANCELLED)
+
+    def unremovable(self: Path, *args: object, **kwargs: object) -> None:
+        raise OSError(errno.EACCES, "Permission denied")
+
+    monkeypatch.setattr(Path, "unlink", unremovable)
+
+    outcome = run(manifest, roots)
+
+    assert outcome.enacted == ()
+    assert (roots.documents_root / ARCHIVED).exists()
+    assert manifest.files.files_for(document.identity) != []
+
+    monkeypatch.undo()
+    again = run(manifest, roots)
+
+    assert again.enacted == (document.identity,)
+    assert not (roots.documents_root / ARCHIVED).exists()
+    assert manifest.files.files_for(document.identity) == []

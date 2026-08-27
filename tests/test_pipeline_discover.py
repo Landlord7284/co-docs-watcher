@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date
+from enum import StrEnum
 from pathlib import Path
 
 import pytest
@@ -11,7 +12,8 @@ import pytest
 from co_docs_watcher.clock import RetentionWindow, window_ending
 from co_docs_watcher.cvm.search import MatchKind
 from co_docs_watcher.cvm.ticker import PrefixSource
-from co_docs_watcher.manifest.repo import Manifest
+from co_docs_watcher.errors import ManifestError, SourceContractError
+from co_docs_watcher.manifest.repo import DocumentRepository, Manifest
 from co_docs_watcher.models import LocalState, SourceDocument, SourceStatus
 from co_docs_watcher.pipeline.discover import discover
 from co_docs_watcher.scope.models import WatchedCompany
@@ -316,3 +318,40 @@ def test_a_watermark_behind_the_monitor_but_not_retention_is_quiet(
         sweep(manifest, monitor, make_document(), retention_window=window)
 
     assert "never observed" not in caplog.text
+
+
+def test_a_row_the_manifest_refuses_does_not_end_the_sweep(
+    manifest: Manifest, window: RetentionWindow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A sweep that dies on row 40 of 450 leaves the day half-observed with nothing saying
+    # which half. An isolated failure is recorded and the sweep carries on.
+    broken = make_document()
+    fine = make_document(document_id=160477)
+    original = DocumentRepository.upsert_observed
+
+    def refuse(self: DocumentRepository, document: SourceDocument, **kwargs: object):
+        if document.identity == broken.identity:
+            raise ManifestError("this row cannot be written")
+        return original(self, document, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(DocumentRepository, "upsert_observed", refuse)
+
+    outcome = sweep(manifest, window, broken, fine)
+
+    assert outcome.refused == 1
+    assert outcome.queued == (fine.identity,)
+    assert manifest.documents.get(broken.identity) is None
+
+
+def test_a_status_this_build_has_no_local_state_for_is_a_contract_divergence(
+    manifest: Manifest, window: RetentionWindow
+) -> None:
+    # The table is exhaustive over every status this build knows. A fourth one is the wire
+    # format having changed, which is loud and fatal to the batch — never a silent pass.
+    class FutureStatus(StrEnum):
+        RETRACTED = "retracted"
+
+    document = make_document(status=FutureStatus.RETRACTED)  # type: ignore[arg-type]
+
+    with pytest.raises(SourceContractError):
+        sweep(manifest, window, document)
