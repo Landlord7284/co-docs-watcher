@@ -102,10 +102,6 @@ TRANSITIONS: dict[LocalState, frozenset[LocalState]] = {
     LocalState.PURGED: frozenset(),
 }
 
-#: States in which the archive is expected to hold files for the document.
-_STATES_WITH_FILES = frozenset({LocalState.AVAILABLE})
-
-
 class AttemptOutcome(StrEnum):
     SUCCESS = "success"
     FAILURE = "failure"
@@ -158,9 +154,9 @@ class FileRecord:
 
 
 class _Repository:
-    def __init__(self, connection: sqlite3.Connection, clock: Clock | None = None) -> None:
+    def __init__(self, connection: sqlite3.Connection, clock: Clock) -> None:
         self._connection = connection
-        self._clock = clock or Clock.installed()
+        self._clock = clock
 
     def _now(self) -> str:
         return self._clock.now().isoformat(timespec="seconds")
@@ -178,11 +174,15 @@ class DocumentRepository(_Repository):
         mutable fields — status above all — and leaves ``local_state`` exactly where it was.
         ``protocol`` is written here and never derived: it is a required download argument, and
         a document discovered today cannot be downloaded tomorrow without re-listing.
+
+        Which of the two it is is decided inside the transaction that acts on it. The lock keeps
+        a second run out, but the rule this manifest states is that a write is settled under the
+        write lock it takes, and a decision read before that lock is a decision taken outside it.
         """
-        existing = self.get(document.identity)
         now = self._now()
-        if existing is None:
-            with transaction(self._connection):
+        with transaction(self._connection):
+            existing = self.get(document.identity)
+            if existing is None:
                 self._connection.execute(
                     """
                     INSERT INTO documents (
@@ -212,44 +212,46 @@ class DocumentRepository(_Repository):
                         now,
                     ),
                 )
-            return self.require(document.identity)
-
-        if existing.document.delivery_date != document.delivery_date:
-            # The delivery date is the archive's axis: a change would strand files in the
-            # directory of the old date. Loud, because it should never happen.
-            logger.warning(
-                "document %s changed delivery date from %s to %s",
-                document.identity,
-                existing.document.delivery_date,
-                document.delivery_date,
-            )
-        with transaction(self._connection):
-            self._connection.execute(
-                """
-                UPDATE documents SET
-                    protocol = ?, cvm_code = ?, legal_name = ?, category = ?, doc_type = ?,
-                    species = ?, subject = ?, modality = ?, status = ?, delivery_date = ?,
-                    reference_date = ?, last_seen_at = ?, updated_at = ?
-                WHERE document_id = ? AND version = ?
-                """,
-                (
-                    document.protocol,
-                    document.cvm_code,
-                    document.legal_name,
-                    document.category,
-                    document.doc_type,
-                    document.species,
-                    document.subject,
-                    document.modality,
-                    str(document.status),
-                    document.delivery_date.isoformat(),
-                    document.reference_date.isoformat() if document.reference_date else None,
-                    now,
-                    now,
-                    document.document_id,
-                    document.version,
-                ),
-            )
+            else:
+                if existing.document.delivery_date != document.delivery_date:
+                    # The delivery date is the archive's axis: a change would strand files in
+                    # the directory of the old date. Loud, because it should never happen.
+                    logger.warning(
+                        "document %s changed delivery date from %s to %s",
+                        document.identity,
+                        existing.document.delivery_date,
+                        document.delivery_date,
+                    )
+                self._connection.execute(
+                    """
+                    UPDATE documents SET
+                        protocol = ?, cvm_code = ?, legal_name = ?, category = ?, doc_type = ?,
+                        species = ?, subject = ?, modality = ?, status = ?, delivery_date = ?,
+                        reference_date = ?, last_seen_at = ?, updated_at = ?
+                    WHERE document_id = ? AND version = ?
+                    """,
+                    (
+                        document.protocol,
+                        document.cvm_code,
+                        document.legal_name,
+                        document.category,
+                        document.doc_type,
+                        document.species,
+                        document.subject,
+                        document.modality,
+                        str(document.status),
+                        document.delivery_date.isoformat(),
+                        (
+                            document.reference_date.isoformat()
+                            if document.reference_date
+                            else None
+                        ),
+                        now,
+                        now,
+                        document.document_id,
+                        document.version,
+                    ),
+                )
         return self.require(document.identity)
 
     def transition(
@@ -261,9 +263,10 @@ class DocumentRepository(_Repository):
     ) -> DocumentRecord:
         """Move a document to ``new_state``, refusing anything the machine does not allow.
 
-        ``archive_path`` is set when the document becomes ``available`` and cleared whenever it
-        stops being on disk — deactivated, cancelled, purged — so the path in the manifest and
-        the file in the archive never disagree.
+        ``archive_path`` is what was passed and nothing else: ``available`` is the only state that
+        carries one, and every other state is a document that is not on disk, so the column is
+        cleared along with the file. The path in the manifest and the file in the archive never
+        disagree because neither survives the other.
         """
         record = self.require(identity)
         current = record.local_state
@@ -275,10 +278,6 @@ class DocumentRepository(_Repository):
             raise ManifestError(f"document {identity}: becoming available requires an archive path")
 
         path = str(archive_path) if archive_path is not None else None
-        if new_state not in _STATES_WITH_FILES and archive_path is None:
-            path = None
-        elif archive_path is None:
-            path = str(record.archive_path) if record.archive_path else None
 
         now = self._now()
         with transaction(self._connection):
@@ -317,6 +316,19 @@ class DocumentRepository(_Repository):
             [str(state) for state in states],
         )
         return [_record(row) for row in rows]
+
+    def count_by_state(self) -> dict[LocalState, int]:
+        """How many documents sit in each local state, counted in the database.
+
+        Nothing ever deletes a row here — ``purge`` marks a document ``purged`` and leaves it,
+        because "aged out" is an answer the archive keeps giving — so the table only grows, and
+        a summary that hydrated every row to take its length would grow with it.
+        """
+        rows = self._connection.execute(
+            "SELECT local_state, count(*) AS n FROM documents GROUP BY local_state"
+        )
+        counted = {LocalState(row["local_state"]): row["n"] for row in rows}
+        return {state: counted.get(state, 0) for state in LocalState}
 
     def delivered_on(self, day: date) -> list[DocumentRecord]:
         rows = self._connection.execute(
@@ -363,17 +375,22 @@ class FileRepository(_Repository):
             "ORDER BY relative_path",
             identity,
         )
-        return [
-            FileRecord(
-                relative_path=Path(row["relative_path"]),
-                role=row["role"],
-                sha256=row["sha256"],
-                size_bytes=row["size_bytes"],
-                stable=bool(row["stable"]),
-                recorded_at=datetime.fromisoformat(row["recorded_at"]),
-            )
-            for row in rows
-        ]
+        try:
+            return [
+                FileRecord(
+                    relative_path=Path(row["relative_path"]),
+                    role=row["role"],
+                    sha256=row["sha256"],
+                    size_bytes=row["size_bytes"],
+                    stable=bool(row["stable"]),
+                    recorded_at=datetime.fromisoformat(row["recorded_at"]),
+                )
+                for row in rows
+            ]
+        except (ValueError, TypeError) as exc:
+            raise ManifestError(
+                f"document {identity}: a file row cannot be read: {exc}"
+            ) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -397,13 +414,18 @@ class AttemptRepository(_Repository):
                 (*identity, self._now(), str(outcome), detail),
             )
 
-    def failures(self, identity: Identity) -> int:
-        row = self._connection.execute(
-            "SELECT count(*) AS n FROM download_attempts WHERE document_id = ? AND version = ? "
-            "AND outcome = ?",
-            (*identity, str(AttemptOutcome.FAILURE)),
-        ).fetchone()
-        return int(row["n"])
+    def lifetime_failures(self, identity: Identity) -> int:
+        """Every failure ever recorded against this document, across every run.
+
+        The count has no window and is never reset, which is what the retry budget is measured
+        against: a document that fails once on each of three runs is as spent as one that failed
+        three times in a single run, and ``failed`` is not a state rediscovery brings back. The
+        name says ``lifetime`` because reading it as "this run's attempts" is the way to be
+        surprised by a document that was only ever unlucky.
+        """
+        return self._count(
+            identity, "AND outcome = ?", (str(AttemptOutcome.FAILURE),)
+        )
 
     def last_failure(self, identity: Identity) -> FailedAttempt | None:
         """The most recent failure recorded against a document, or ``None`` if it had none.
@@ -423,10 +445,15 @@ class AttemptRepository(_Repository):
             at=datetime.fromisoformat(row["attempted_at"]), detail=row["detail"]
         )
 
-    def attempts(self, identity: Identity) -> int:
+    def lifetime_attempts(self, identity: Identity) -> int:
+        """Every attempt ever recorded against this document, successful or not."""
+        return self._count(identity, "", ())
+
+    def _count(self, identity: Identity, predicate: str, params: tuple[str, ...]) -> int:
         row = self._connection.execute(
-            "SELECT count(*) AS n FROM download_attempts WHERE document_id = ? AND version = ?",
-            identity,
+            "SELECT count(*) AS n FROM download_attempts "
+            f"WHERE document_id = ? AND version = ? {predicate}",
+            (*identity, *params),
         ).fetchone()
         return int(row["n"])
 
@@ -458,7 +485,12 @@ class SyncStateRepository(_Repository):
 
     def watermark(self) -> date | None:
         recorded = self.get(self.WATERMARK)
-        return date.fromisoformat(recorded) if recorded else None
+        if not recorded:
+            return None
+        try:
+            return date.fromisoformat(recorded)
+        except ValueError as exc:
+            raise ManifestError(f"the watermark {recorded!r} is not a date: {exc}") from exc
 
     def set_watermark(self, day: date) -> None:
         self.set(self.WATERMARK, day.isoformat())
@@ -474,7 +506,14 @@ class Manifest:
     state: SyncStateRepository
 
     @classmethod
-    def over(cls, connection: sqlite3.Connection, clock: Clock | None = None) -> Manifest:
+    def over(cls, connection: sqlite3.Connection, clock: Clock) -> Manifest:
+        """The four repositories over one connection, all stamping time from one clock.
+
+        The clock is required rather than defaulted: reading the process-wide one from inside a
+        repository would make a manifest raise ``ConfigError`` — a configuration failure, exit
+        code 2 — for a timezone that was never installed, from four frames below where the
+        decision to install it lives.
+        """
         return cls(
             documents=DocumentRepository(connection, clock),
             files=FileRepository(connection, clock),
@@ -484,6 +523,22 @@ class Manifest:
 
 
 def _record(row: sqlite3.Row) -> DocumentRecord:
+    """Hydrate a row, refusing one that no longer reads as what this build wrote.
+
+    A ``local_state`` outside the enum or a date that no longer parses is a manifest edited by
+    hand or written by something else, and it is named as such: a bare ``ValueError`` from four
+    frames down reaches the operator as a traceback instead of as one of the documented exit
+    codes. The identity is read outside the guard because a missing column is a schema defect
+    rather than a corrupted value, and it should stay loud.
+    """
+    identity = (row["document_id"], row["version"])
+    try:
+        return _hydrate(row)
+    except (ValueError, TypeError) as exc:
+        raise ManifestError(f"document {identity}: the manifest row cannot be read: {exc}") from exc
+
+
+def _hydrate(row: sqlite3.Row) -> DocumentRecord:
     document = SourceDocument(
         document_id=row["document_id"],
         version=row["version"],

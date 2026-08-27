@@ -17,6 +17,7 @@ from co_docs_watcher.config import (
     DEFAULT_FILE_MODE,
     DEFAULT_LOG_BACKUPS,
     DEFAULT_LOG_MAX_BYTES,
+    DEFAULT_MAX_DOCUMENT_ATTEMPTS,
     DEFAULT_MAX_DOWNLOAD_BYTES,
     DEFAULT_MAX_EXTRACTED_BYTES,
     DEFAULT_MAX_LISTING_BYTES,
@@ -117,6 +118,7 @@ def test_documented_defaults_apply_when_the_file_omits_them(tmp_path: Path) -> N
     assert config.retries == DEFAULT_RETRIES
     assert config.backoff_initial == DEFAULT_BACKOFF_INITIAL
     assert config.backoff_factor == DEFAULT_BACKOFF_FACTOR
+    assert config.max_document_attempts == DEFAULT_MAX_DOCUMENT_ATTEMPTS
     assert config.registry_max_age_days == DEFAULT_REGISTRY_MAX_AGE_DAYS
     assert config.discovery_days == DEFAULT_RETENTION_DAYS
     assert config.monitor_days == DEFAULT_MONITOR_DAYS
@@ -415,6 +417,8 @@ logs_root = "~/watcher/logs"
         (VALID + '[retention]\ndays = "seven"\n', "integer >= 1"),
         (VALID + "[source]\nmin_request_interval = 0\n", "number > 0"),
         (VALID + "[source]\nmax_requests_per_run = -3\n", "integer >= 1"),
+        # Zero attempts would give up on a document before trying it once.
+        (VALID + "[source]\nmax_document_attempts = 0\n", "integer >= 1"),
         (VALID + "[retention]\nweeks = 3\n", "unknown key"),
         (VALID + "[registry]\nmax_age_days = 0\n", "integer >= 1"),
         (VALID + '[prefix_overrides]\nPETR = "PETR"\n', "is not a CVM code"),

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import date
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -16,6 +16,7 @@ from co_docs_watcher.manifest.db import open_manifest
 from co_docs_watcher.manifest.repo import (
     TRANSITIONS,
     AttemptOutcome,
+    DocumentRecord,
     FileRecord,
     Manifest,
 )
@@ -209,6 +210,54 @@ def test_a_day_can_be_read_back_for_the_inbox(manifest: Manifest) -> None:
     assert [record.document.cvm_code for record in day] == ["004170", "009512"]
 
 
+#: Every column of ``documents``, and what reads it back. The list of columns lives in four
+#: places — the DDL, the INSERT, the UPDATE and the hydration — and none of them fails loudly
+#: when a fifth is added and one of the others is forgotten. This is what fails instead.
+_COLUMN_READERS: dict[str, Callable[[DocumentRecord], object]] = {
+    "document_id": lambda r: r.document.document_id,
+    "version": lambda r: r.document.version,
+    "protocol": lambda r: r.document.protocol,
+    "cvm_code": lambda r: r.document.cvm_code,
+    "legal_name": lambda r: r.document.legal_name,
+    "category": lambda r: r.document.category,
+    "doc_type": lambda r: r.document.doc_type,
+    "species": lambda r: r.document.species,
+    "subject": lambda r: r.document.subject,
+    "modality": lambda r: r.document.modality,
+    "status": lambda r: str(r.document.status),
+    "delivery_date": lambda r: r.document.delivery_date.isoformat(),
+    "reference_date": lambda r: (
+        r.document.reference_date.isoformat() if r.document.reference_date else None
+    ),
+    "local_state": lambda r: str(r.local_state),
+    "archive_path": lambda r: str(r.archive_path) if r.archive_path else None,
+    "first_seen_at": lambda r: r.first_seen_at.isoformat(timespec="seconds"),
+    "last_seen_at": lambda r: r.last_seen_at.isoformat(timespec="seconds"),
+    "updated_at": lambda r: r.updated_at.isoformat(timespec="seconds"),
+}
+
+
+def test_every_column_is_written_and_read_back(manifest: Manifest, tmp_path: Path) -> None:
+    """A column the schema declares, the write skips, or the hydration ignores is a lie."""
+    document = make_document(reference_date=date(2026, 6, 30))
+    manifest.documents.upsert_observed(document)
+    manifest.documents.transition(document.identity, LocalState.DOWNLOADING)
+    record = manifest.documents.transition(
+        document.identity, LocalState.AVAILABLE, archive_path=ARCHIVE
+    )
+
+    reader = sqlite3.connect(tmp_path / "manifest.sqlite")
+    reader.row_factory = sqlite3.Row
+    columns = [row["name"] for row in reader.execute("PRAGMA table_info(documents)")]
+    stored = reader.execute("SELECT * FROM documents").fetchone()
+    reader.close()
+
+    assert set(columns) == set(_COLUMN_READERS)
+    assert {column: stored[column] for column in columns} == {
+        column: read(record) for column, read in _COLUMN_READERS.items()
+    }
+
+
 def test_hashes_are_per_file_with_a_stability_marker(manifest: Manifest) -> None:
     document = make_document()
     manifest.documents.upsert_observed(document)
@@ -266,9 +315,9 @@ def test_attempts_are_counted_for_the_retry_budget(manifest: Manifest) -> None:
     manifest.attempts.record(document.identity, AttemptOutcome.FAILURE, "timeout")
     manifest.attempts.record(document.identity, AttemptOutcome.SUCCESS)
 
-    assert manifest.attempts.attempts(document.identity) == 3
-    assert manifest.attempts.failures(document.identity) == 2
-    assert manifest.attempts.failures((999, 1)) == 0
+    assert manifest.attempts.lifetime_attempts(document.identity) == 3
+    assert manifest.attempts.lifetime_failures(document.identity) == 2
+    assert manifest.attempts.lifetime_failures((999, 1)) == 0
 
 
 def test_the_last_failure_is_readable_without_opening_the_manifest(manifest: Manifest) -> None:
@@ -285,6 +334,27 @@ def test_the_last_failure_is_readable_without_opening_the_manifest(manifest: Man
     assert failure is not None
     assert failure.detail == "not well-formed XML"
     assert failure.at.tzinfo is not None
+
+
+def test_a_row_this_build_cannot_read_is_a_manifest_error(
+    manifest: Manifest, tmp_path: Path
+) -> None:
+    # Hand-edited, or written by something else: the operator gets a named document and the
+    # documented exit code, not a ValueError from inside the hydration.
+    document = make_document()
+    manifest.documents.upsert_observed(document)
+    editor = sqlite3.connect(tmp_path / "manifest.sqlite", isolation_level=None)
+    editor.execute("UPDATE documents SET local_state = 'evaporated'")
+    editor.close()
+
+    with pytest.raises(ManifestError, match="cannot be read"):
+        manifest.documents.get(document.identity)
+
+
+def test_a_watermark_that_is_not_a_date_is_a_manifest_error(manifest: Manifest) -> None:
+    manifest.state.set(manifest.state.WATERMARK, "the day before yesterday")
+    with pytest.raises(ManifestError, match="not a date"):
+        manifest.state.watermark()
 
 
 def test_the_watermark_records_progress(manifest: Manifest) -> None:

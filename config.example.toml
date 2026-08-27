@@ -105,6 +105,12 @@ max_extracted_bytes = 1073741824
 retries = 3
 backoff_initial = 15.0
 backoff_factor = 4.0
+# Failed downloads a single document is allowed before the watcher stops retrying it. Counted
+# in the manifest across runs and never reset: one try per run, so a source that is down for an
+# afternoon costs a document one attempt rather than its whole budget — and, by the same
+# arithmetic, a document that has spent it stays `failed` and does not rejoin the queue when the
+# sweep sees it again. A different budget from retries, which is what one request is worth.
+max_document_attempts = 3
 # Overridden only to point at a test server or a mirror.
 base_url = "https://www.rad.cvm.gov.br/ENETWeb/"
 

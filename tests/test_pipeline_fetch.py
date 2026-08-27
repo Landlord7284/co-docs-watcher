@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from co_docs_watcher.archive_modes import ArchiveModes
+from co_docs_watcher.config import DEFAULT_MAX_DOCUMENT_ATTEMPTS as ATTEMPTS
 from co_docs_watcher.errors import (
     CaptchaRequiredError,
     DocumentError,
@@ -29,7 +30,6 @@ from co_docs_watcher.models import (
 )
 from co_docs_watcher.pipeline.fetch import (
     _MAX_CONTAINER_NAMES,
-    MAX_ATTEMPTS,
     archive_path_of,
     category_component,
     document_file_name,
@@ -58,6 +58,7 @@ def queue(manifest: Manifest, *documents: SourceDocument) -> None:
 def run(
     manifest: Manifest, roots: Roots, source: FakeSource, **kwargs: object
 ) -> object:
+    kwargs.setdefault("max_attempts", ATTEMPTS)
     return fetch_pending(
         source,
         manifest,
@@ -209,7 +210,7 @@ def test_a_failed_download_leaves_nothing_in_the_archive_and_stays_in_the_queue(
     assert manifest.documents.require(document.identity).local_state is LocalState.DISCOVERED
     assert list(roots.day(TODAY).glob("*")) == []
     assert list(roots.staging_root.iterdir()) == []
-    assert manifest.attempts.failures(document.identity) == 1
+    assert manifest.attempts.lifetime_failures(document.identity) == 1
 
 
 def test_debris_from_a_failed_attempt_never_reaches_the_archive(
@@ -245,10 +246,10 @@ def test_the_batch_survives_a_document_that_cannot_be_fetched(
 def test_the_retry_budget_is_counted_across_runs(manifest: Manifest, roots: Roots) -> None:
     document = make_document()
     queue(manifest, document)
-    errors = [TransientSourceError("down") for _ in range(MAX_ATTEMPTS)]
+    errors = [TransientSourceError("down") for _ in range(ATTEMPTS)]
     source = FakeSource(failures={document.identity: errors})
 
-    for _ in range(MAX_ATTEMPTS - 1):
+    for _ in range(ATTEMPTS - 1):
         run(manifest, roots, source)
         assert manifest.documents.require(document.identity).local_state is LocalState.DISCOVERED
 
@@ -277,8 +278,8 @@ def test_every_attempt_is_recorded_against_the_budget(manifest: Manifest, roots:
 
     run(manifest, roots, FakeSource())
 
-    assert manifest.attempts.attempts(document.identity) == 1
-    assert manifest.attempts.failures(document.identity) == 0
+    assert manifest.attempts.lifetime_attempts(document.identity) == 1
+    assert manifest.attempts.lifetime_failures(document.identity) == 0
 
 
 def test_a_company_missing_from_the_watch_list_is_filed_under_its_cvm_code(
@@ -293,6 +294,7 @@ def test_a_company_missing_from_the_watch_list_is_filed_under_its_cvm_code(
         documents_root=roots.documents_root,
         staging_root=roots.staging_root,
         watched=(),
+        max_attempts=ATTEMPTS,
     )
 
     assert (roots.day(TODAY) / "002437" / "Fato-Relevante_160310_V01.pdf").exists()
@@ -371,7 +373,7 @@ def test_a_source_that_refuses_the_run_costs_the_queue_nothing(
         run(manifest, roots, source)
 
     assert manifest.documents.require(document.identity).local_state is LocalState.DISCOVERED
-    assert manifest.attempts.attempts(document.identity) == 0
+    assert manifest.attempts.lifetime_attempts(document.identity) == 0
     assert list(roots.staging_root.iterdir()) == []
 
 
@@ -492,7 +494,7 @@ def test_an_archive_that_cannot_be_written_does_not_cost_the_document_its_budget
 
     assert outcome.retrying == (document.identity,)
     assert manifest.documents.require(document.identity).local_state is LocalState.DISCOVERED
-    assert manifest.attempts.failures(document.identity) == 0
+    assert manifest.attempts.lifetime_failures(document.identity) == 0
 
 
 def test_a_category_folder_that_is_not_this_documents_is_never_overwritten(
@@ -561,4 +563,4 @@ def test_a_staged_file_with_no_extension_is_refused_instead_of_being_called_a_pd
 
     assert outcome.retrying == (document.identity,)
     assert list((roots.day(TODAY) / "PETR").iterdir()) == []
-    assert manifest.attempts.failures(document.identity) == 1
+    assert manifest.attempts.lifetime_failures(document.identity) == 1

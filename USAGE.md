@@ -84,6 +84,7 @@ max_extracted_bytes = 1073741824  # cap on what one container may inflate to
 retries = 3                    # attempts after a transient failure
 backoff_initial = 15.0         # first wait between attempts; never below min_request_interval
 backoff_factor = 4.0           # the wait is multiplied by this each attempt
+max_document_attempts = 3      # failed downloads one document gets, counted across runs
 base_url = "https://www.rad.cvm.gov.br/ENETWeb/"  # override only for a test server or mirror
 
 [prefix_overrides]

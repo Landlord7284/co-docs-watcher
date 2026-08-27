@@ -10,10 +10,11 @@ from pathlib import Path
 import pytest
 
 from co_docs_watcher.clock import RetentionWindow
+from co_docs_watcher.config import DEFAULT_MAX_DOCUMENT_ATTEMPTS as ATTEMPTS
 from co_docs_watcher.manifest.repo import FileRecord, Manifest
 from co_docs_watcher.models import FileRole, LocalState, SourceDocument, SourceStatus
 from co_docs_watcher.pipeline.discover import discover
-from co_docs_watcher.pipeline.fetch import MAX_ATTEMPTS, fetch_pending
+from co_docs_watcher.pipeline.fetch import fetch_pending
 from co_docs_watcher.pipeline.reconcile import enact_flags, reconcile
 from tests.conftest import TODAY, Roots
 from tests.pipeline import PDF_BYTES, FakeSource
@@ -57,6 +58,7 @@ def archived(manifest: Manifest, roots: Roots, document: SourceDocument) -> None
 
 
 def run(manifest: Manifest, roots: Roots, **kwargs: object) -> object:
+    kwargs.setdefault("max_attempts", ATTEMPTS)
     return reconcile(
         manifest,
         documents_root=roots.documents_root,
@@ -133,7 +135,7 @@ def test_an_interruption_is_recorded_against_the_retry_budget(
     manifest: Manifest, roots: Roots
 ) -> None:
     document = make_document()
-    for _ in range(MAX_ATTEMPTS - 1):
+    for _ in range(ATTEMPTS - 1):
         in_flight(manifest, document)
         run(manifest, roots)
         assert manifest.documents.require(document.identity).local_state is LocalState.DISCOVERED
@@ -243,6 +245,7 @@ def test_a_finished_run_reconciles_to_itself(manifest: Manifest, roots: Roots) -
         documents_root=roots.documents_root,
         staging_root=roots.staging_root,
         watched=(PETR,),
+        max_attempts=ATTEMPTS,
     )
 
     outcome = run(manifest, roots)
@@ -266,6 +269,7 @@ def test_a_cancellation_observed_today_takes_the_file_with_it_today(
         documents_root=roots.documents_root,
         staging_root=roots.staging_root,
         watched=(PETR,),
+        max_attempts=ATTEMPTS,
     )
     placed = roots.documents_root / str(manifest.documents.require(document.identity).archive_path)
     assert placed.exists()

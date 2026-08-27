@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from co_docs_watcher import cli
+from co_docs_watcher.clock import Clock
 from co_docs_watcher.config import load_config
 from co_docs_watcher.errors import ExitCode
 from co_docs_watcher.lock import RunLock
@@ -327,7 +328,7 @@ def test_status_explains_why_each_pending_document_is_pending(
     """A count answers "is anything missing?"; only the reason answers "why?"."""
     config = load_config(config_file)
     connection = open_manifest(config.manifest_path)
-    manifest = Manifest.over(connection)
+    manifest = Manifest.over(connection, Clock.installed())
     waiting = make_document(document_id=161009, version=6, category="FRE")
     untried = make_document(document_id=161010, version=1, category="ITR")
     for document in (waiting, untried):

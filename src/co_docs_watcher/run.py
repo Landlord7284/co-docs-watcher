@@ -184,6 +184,7 @@ def execute_run(
                 manifest,
                 documents_root=config.documents_root,
                 staging_root=config.staging_root,
+                max_attempts=config.max_document_attempts,
             )
             registry_error = _refresh_registry(config, clock)
             watched = WatchList.load(config.watch_list_path).companies
@@ -278,6 +279,7 @@ def _observe_and_fetch(
             documents_root=config.documents_root,
             staging_root=config.staging_root,
             watched=watched,
+            max_attempts=config.max_document_attempts,
         )
     except RequestBudgetExceededError as error:
         # The queue was already put back in order by the fetch step itself.

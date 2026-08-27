@@ -128,17 +128,47 @@ def connect(path: Path) -> sqlite3.Connection:
 
     ``isolation_level=None`` turns off the driver's implicit transactions: writes are explicit,
     through :func:`transaction`, so it is always visible where one begins and ends.
+
+    Opening covers the pragmas and not just the driver call, because ``sqlite3.connect`` never
+    touches the file: the first read of it is the first pragma, and that is where a manifest that
+    is not a database announces itself. A failure at either end leaves no connection behind and
+    reaches the operator as a :class:`ManifestError`, which is what carries a documented exit code.
     """
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    connection: sqlite3.Connection | None = None
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(path, isolation_level=None)
-    except sqlite3.Error as exc:
+        connection.row_factory = sqlite3.Row
+        journal_mode = _apply_pragmas(connection)
+    except (OSError, sqlite3.Error) as exc:
+        if connection is not None:
+            connection.close()
         raise ManifestError(f"{path}: cannot open the manifest: {exc}") from exc
-    connection.row_factory = sqlite3.Row
-    for pragma, value in PRAGMAS:
-        connection.execute(f"PRAGMA {pragma} = {value}")
+    if journal_mode != "wal":
+        connection.close()
+        raise ManifestError(
+            f"{path}: the manifest opened in journal mode {journal_mode!r} instead of WAL. "
+            "That is the answer of a filesystem that cannot support it, and data_root must live "
+            "on a filesystem local to the process."
+        )
     return connection
+
+
+def _apply_pragmas(connection: sqlite3.Connection) -> str:
+    """Apply :data:`PRAGMAS` and return the journal mode actually in force.
+
+    ``journal_mode`` is the one pragma here that can fail without failing: SQLite answers with the
+    mode it settled on rather than with an error, so a filesystem that cannot support WAL leaves
+    the manifest in rollback journalling and says nothing. Readers never blocking the writer is
+    what this database is designed around, so the answer is read back rather than assumed.
+    """
+    journal_mode = ""
+    for pragma, value in PRAGMAS:
+        row = connection.execute(f"PRAGMA {pragma} = {value}").fetchone()
+        if pragma == "journal_mode":
+            journal_mode = str(row[0]).lower() if row is not None else "unknown"
+    return journal_mode
 
 
 def open_manifest(path: Path) -> sqlite3.Connection:
@@ -184,11 +214,23 @@ def transaction(connection: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
     """An explicit write transaction. ``BEGIN IMMEDIATE`` takes the write lock up front.
 
     Nothing that talks to the network belongs inside this block.
+
+    The commit is guarded like the body is, because a transaction left open outlives the write that
+    failed: the next ``BEGIN IMMEDIATE`` on the same connection is refused, and one document that
+    could not be committed would take every write after it with it. A rollback that itself fails is
+    reported and never replaces the failure that caused it.
     """
     connection.execute("BEGIN IMMEDIATE")
     try:
         yield connection
+        connection.execute("COMMIT")
     except BaseException:
-        connection.execute("ROLLBACK")
+        _rollback(connection)
         raise
-    connection.execute("COMMIT")
+
+
+def _rollback(connection: sqlite3.Connection) -> None:
+    try:
+        connection.execute("ROLLBACK")
+    except sqlite3.Error as exc:
+        logger.error("the manifest transaction could not be rolled back: %s", exc)

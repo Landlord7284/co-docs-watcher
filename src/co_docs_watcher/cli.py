@@ -346,11 +346,12 @@ def _cmd_reconcile(config: Config, args: argparse.Namespace) -> ExitCode:
     with RunLock(config.lock_path):
         connection = open_manifest(config.manifest_path)
         try:
-            manifest = Manifest.over(connection)
+            manifest = Manifest.over(connection, Clock.installed())
             outcome = reconcile(
                 manifest,
                 documents_root=config.documents_root,
                 staging_root=config.staging_root,
+                max_attempts=config.max_document_attempts,
             )
             window = Clock.installed().window(config.retention_days)
             regenerate(
@@ -368,7 +369,7 @@ def _cmd_purge(config: Config, args: argparse.Namespace) -> ExitCode:
     with RunLock(config.lock_path):
         connection = open_manifest(config.manifest_path)
         try:
-            manifest = Manifest.over(connection)
+            manifest = Manifest.over(connection, Clock.installed())
             window = Clock.installed().window(config.retention_days)
             purge(
                 manifest,
@@ -410,8 +411,8 @@ def _cmd_status(config: Config, args: argparse.Namespace) -> ExitCode:
         return ExitCode.CLEAN
     connection = open_manifest(config.manifest_path)
     try:
-        manifest = Manifest.over(connection)
-        counts = {state: len(manifest.documents.in_state(state)) for state in LocalState}
+        manifest = Manifest.over(connection, Clock.installed())
+        counts = manifest.documents.count_by_state()
         total = sum(counts.values())
         states = ", ".join(
             f"{count} {state}" for state, count in counts.items() if count
@@ -454,7 +455,7 @@ def _last_failure(manifest: Manifest, identity: tuple[int, int]) -> str:
     failure = manifest.attempts.last_failure(identity)
     if failure is None:
         return "not attempted yet"
-    attempts = manifest.attempts.failures(identity)
+    attempts = manifest.attempts.lifetime_failures(identity)
     when = failure.at.isoformat(sep=" ", timespec="seconds")
     return (
         f"{attempts} failed attempt(s), last {when}: "

@@ -119,6 +119,13 @@ DEFAULT_RETRIES = 3
 DEFAULT_BACKOFF_INITIAL = 15.0
 DEFAULT_BACKOFF_FACTOR = 4.0
 
+#: Failed downloads a document is allowed before it stops being retried. Attempts are counted
+#: in the manifest across runs and never reset: one try per run, so a source that is down for
+#: an afternoon costs a document one attempt rather than its whole budget — and, by the same
+#: arithmetic, a document that has spent it does not rejoin the queue when the sweep sees it
+#: again. A different budget from ``retries``, which is what one request is worth to the client.
+DEFAULT_MAX_DOCUMENT_ATTEMPTS = 3
+
 #: Days a cached FCA package is considered current. The registry only moves when a company
 #: files a registration form, so a week-old snapshot names companies exactly as today's does.
 DEFAULT_REGISTRY_MAX_AGE_DAYS = 7
@@ -159,6 +166,7 @@ _SCHEMA: dict[str, set[str]] = {
         "retries",
         "backoff_initial",
         "backoff_factor",
+        "max_document_attempts",
         "base_url",
     },
 }
@@ -201,6 +209,7 @@ class Config:
     retries: int
     backoff_initial: float
     backoff_factor: float
+    max_document_attempts: int
     registry_max_age_days: int
     source_base_url: str
     prefix_overrides: Mapping[str, str]
@@ -331,6 +340,7 @@ def load_config(
             retries=DEFAULT_RETRIES,
             backoff_initial=DEFAULT_BACKOFF_INITIAL,
             backoff_factor=DEFAULT_BACKOFF_FACTOR,
+            max_document_attempts=DEFAULT_MAX_DOCUMENT_ATTEMPTS,
             registry_max_age_days=DEFAULT_REGISTRY_MAX_AGE_DAYS,
             source_base_url=DEFAULT_SOURCE_BASE_URL,
             prefix_overrides={},
@@ -422,6 +432,13 @@ def _from_file(path: Path) -> Config:
         ),
         backoff_factor=_number_at_least(
             source, "backoff_factor", DEFAULT_BACKOFF_FACTOR, minimum=1.0, where="source", path=path
+        ),
+        max_document_attempts=_positive_int(
+            source,
+            "max_document_attempts",
+            DEFAULT_MAX_DOCUMENT_ATTEMPTS,
+            where="source",
+            path=path,
         ),
         registry_max_age_days=_positive_int(
             registry,
