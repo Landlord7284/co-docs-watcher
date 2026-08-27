@@ -41,6 +41,7 @@ from co_docs_watcher.manifest.db import open_manifest
 from co_docs_watcher.manifest.repo import Manifest
 from co_docs_watcher.models import LocalState, SourceStatus
 from co_docs_watcher.run import execute_run
+from tests import fca
 from tests.conftest import CLOCK, TODAY
 from tests.fca import build_package
 from tests.pipeline import FakeSource
@@ -221,6 +222,65 @@ def test_a_registry_that_cannot_be_read_downgrades_to_a_warning(
     assert report.registry_error is not None
     assert not report.clean and int(report.exit_code) == 1
     assert any("registry" in record.getMessage() for record in caplog.records)
+    # No usable registry, no settling: the watch list byte-for-byte as the human left it.
+    assert (config.data_root / "companies.yaml").read_text(encoding="utf-8") == WATCH_LIST
+
+
+WATCH_LIST_ODONTOPREV = """\
+companies:
+  - cvm_code: '020125'
+    prefix: ODPV
+    prefix_source: ticker
+    matched_by: ticker
+    legal_name: ODONTOPREV S.A.
+"""
+
+
+def test_a_rename_in_the_registry_moves_the_prefix_going_forward(config: Config) -> None:
+    """The measured rename: the entry follows the registry, the folders on disk do not.
+
+    Settling runs before discovery, so the day's placements already use the new name; a day
+    already written keeps its folder, and its index keeps resolving to the file on disk."""
+    (config.data_root / "companies.yaml").write_text(WATCH_LIST_ODONTOPREV, encoding="utf-8")
+    cache = config.registry_cache_root
+    (cache / "fca_cia_aberta_2025.zip").write_bytes(
+        build_package(
+            year=2025,
+            general=[*fca.GENERAL_ROWS, fca.ODONTOPREV_GENERAL_2025],
+            securities=[*fca.SECURITIES_ROWS, fca.ODONTOPREV_SECURITIES_2025],
+        )
+    )
+    earlier = TODAY - timedelta(days=2)
+    first = make_document(document_id=160310, cvm_code="020125", delivery_date=earlier)
+    run(config, FakeSource([first]))
+    old_file = (
+        config.documents_root / earlier.isoformat() / "ODPV" / "Fato-Relevante_160310_V01.pdf"
+    )
+    assert old_file.is_file()
+
+    # The 2026 package now carries the rename; the merged registry follows it by CNPJ.
+    (cache / "fca_cia_aberta_2026.zip").write_bytes(
+        build_package(
+            year=2026,
+            general=[*fca.GENERAL_ROWS, fca.BRADSAUDE_GENERAL_2026],
+            securities=[*fca.SECURITIES_ROWS, fca.BRADSAUDE_SECURITIES_2026],
+        )
+    )
+    second = make_document(document_id=160311, cvm_code="020125", delivery_date=TODAY)
+    report = run(config, FakeSource([first, second]))
+
+    assert report.clean
+    new_file = (
+        config.documents_root / TODAY.isoformat() / "SAUD" / "Fato-Relevante_160311_V01.pdf"
+    )
+    assert new_file.is_file()
+    assert old_file.is_file()
+    index = (config.inbox_root / f"{earlier.isoformat()}.md").read_text(encoding="utf-8")
+    assert f"../{earlier.isoformat()}/ODPV/Fato-Relevante_160310_V01.pdf" in index
+    content = (config.data_root / "companies.yaml").read_text(encoding="utf-8")
+    assert "prefix: SAUD" in content
+    assert "legal_name: BRADSAÚDE S.A." in content
+    assert "matched_by: ticker" in content
 
 
 def test_an_isolated_document_failure_never_kills_the_batch(config: Config) -> None:

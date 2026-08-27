@@ -76,6 +76,43 @@ ENERGISA = "00.864.214/0001-06"
 TEGMA = "02.351.144/0001-18"
 PLASCAR = "51.928.174/0001-50"
 SCHLOSSER = "82.981.929/0001-03"
+ODONTOPREV = "58.119.199/0001-51"
+
+#: The measured rename (2026-08-27, on the packages published 2026-08-23): Odontoprev became
+#: Bradsaúde, and the 2026 member replaces the trading code wholesale — ``ODPV3`` leaves no
+#: row at all, not even one with an end date. What survives a rename is the previous *name*,
+#: never the previous *code*. These rows are not part of :data:`GENERAL_ROWS`; tests that
+#: reason about the rename append the year they mean.
+ODONTOPREV_GENERAL_2025: Mapping[str, str] = {
+    "CNPJ_Companhia": ODONTOPREV,
+    "Versao": "1",
+    "ID_Documento": "146977",
+    "Nome_Empresarial": "ODONTOPREV S.A.",
+    "Nome_Empresarial_Anterior": "Odontoprev Previdência Odontológica S/C",
+    "Codigo_CVM": "020125",
+    "Situacao_Registro_CVM": "Ativo",
+}
+ODONTOPREV_SECURITIES_2025: Mapping[str, str] = {
+    "CNPJ_Companhia": ODONTOPREV,
+    "ID_Documento": "146977",
+    "Valor_Mobiliario": "Ações Ordinárias",
+    "Codigo_Negociacao": "ODPV3",
+}
+BRADSAUDE_GENERAL_2026: Mapping[str, str] = {
+    "CNPJ_Companhia": ODONTOPREV,
+    "Versao": "2",
+    "ID_Documento": "156733",
+    "Nome_Empresarial": "BRADSAÚDE S.A.",
+    "Nome_Empresarial_Anterior": "ODONTOPREV S.A.",
+    "Codigo_CVM": "020125",
+    "Situacao_Registro_CVM": "Ativo",
+}
+BRADSAUDE_SECURITIES_2026: Mapping[str, str] = {
+    "CNPJ_Companhia": ODONTOPREV,
+    "ID_Documento": "156733",
+    "Valor_Mobiliario": "Ações Ordinárias",
+    "Codigo_Negociacao": "SAUD3",
+}
 
 GENERAL_ROWS: tuple[Mapping[str, str], ...] = (
     {

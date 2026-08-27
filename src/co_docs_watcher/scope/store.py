@@ -47,8 +47,11 @@ Comments, ordering and quoting in this file survive every rewrite the watcher ma
 an edit made while the watcher is running is never overwritten. Entries are added by
 `add` and removed by `rm`; editing them by hand is fine.
 
-`prefix` names the company's folder in the archive and is a snapshot: changing it here
-changes where future documents are filed, and never renames a folder already on disk.
+`prefix` names the company's folder in the archive and is a snapshot of what the company
+is called now: every run re-derives it, and `legal_name`, from the registry, so an edit
+made here lasts only until the registry disagrees — a name the watcher must not change
+belongs in `[prefix_overrides]` in the configuration. Changing the prefix changes where
+future documents are filed; a folder already on disk is never renamed.
 """
 
 
@@ -133,6 +136,27 @@ class WatchList:
         entry["cvm_code"] = SingleQuotedScalarString(company.cvm_code)
         self._document[COMPANIES_KEY].append(entry)
         return True
+
+    def update(self, company: WatchedCompany) -> bool:
+        """Rewrite one entry's stored fields in place, keyed by its CVM code.
+
+        Returns ``False`` when the company is not watched or already reads exactly this
+        way, changing nothing either way. The entry's mapping is edited key by key rather
+        than replaced, so a comment the human attached to it — or to any key inside it —
+        survives, and so does the entry's position in the file.
+        """
+        entries = self._document[COMPANIES_KEY]
+        for index, stored in enumerate(self.companies):
+            if stored.cvm_code != company.cvm_code:
+                continue
+            if stored == company:
+                return False
+            entry = entries[index]
+            for key, value in company.to_mapping().items():
+                if key != "cvm_code":
+                    entry[key] = value
+            return True
+        return False
 
     def remove(self, cvm_code: str) -> WatchedCompany | None:
         """Remove a company by CVM code, returning what was removed."""

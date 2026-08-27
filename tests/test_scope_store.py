@@ -115,6 +115,49 @@ def test_removing_returns_what_was_removed(tmp_path: Path) -> None:
     assert watch_list.remove("999999") is None
 
 
+def test_updating_rewrites_the_entry_in_place_and_keeps_its_comments(tmp_path: Path) -> None:
+    path = written(tmp_path)
+    watch_list = WatchList.load(path)
+    renamed = WatchedCompany(
+        cvm_code="009512",
+        prefix="BRPETRO",
+        prefix_source=PrefixSource.TICKER,
+        legal_name="BRASIL PETROLEO S.A.",
+        matched_by=MatchKind.TICKER,
+    )
+
+    assert watch_list.update(renamed)
+    watch_list.save()
+
+    content = path.read_text(encoding="utf-8")
+    assert "# Bought in 2019, still the largest position." in content
+    assert "# iron ore" in content
+    reloaded = WatchList.load(path).companies
+    # Rewritten in place: the entry keeps its position, and the neighbour is untouched.
+    assert [entry.prefix for entry in reloaded] == ["BRPETRO", "VALE"]
+    assert reloaded[0].legal_name == "BRASIL PETROLEO S.A."
+    assert reloaded[1].legal_name == "VALE S.A."
+
+
+def test_updating_an_entry_that_already_reads_this_way_changes_nothing(tmp_path: Path) -> None:
+    path = written(tmp_path)
+    watch_list = WatchList.load(path)
+    before = path.read_bytes()
+
+    assert not watch_list.update(watch_list.companies[0])
+    watch_list.save()
+
+    assert path.read_bytes() == before
+
+
+def test_updating_a_company_that_is_not_watched_changes_nothing(tmp_path: Path) -> None:
+    watch_list = WatchList.load(written(tmp_path))
+
+    assert not watch_list.update(company())
+
+    assert [entry.prefix for entry in watch_list.companies] == ["PETR", "VALE"]
+
+
 def test_an_edit_made_underneath_is_never_overwritten(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

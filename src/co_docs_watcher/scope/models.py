@@ -1,10 +1,14 @@
 """What the watch list stores about a company, and how it survives a round trip through YAML.
 
-An entry is a *decision*, not a copy of the registry. It records the CVM code the sweep is
-filtered against, the folder prefix the archive is built with, and how both were arrived at —
-which query stage found the company and which step of the fallback chain named it. The
-registry moves; the archive on disk does not, and months later "why is this folder called
-``009512``?" has to be answerable without re-running anything.
+An entry records the CVM code the sweep is filtered against, the folder prefix the archive
+is built with, and how both were arrived at — which query stage found the company and which
+step of the fallback chain named it. ``prefix``, ``prefix_source`` and ``legal_name`` follow
+the registry: every run re-derives them, so a company that changes its ticker or its legal
+name is followed instead of frozen at what it was called when it was registered.
+``matched_by`` is the decision that stays — it records how the company was *found*, and
+months later "why is this company here at all?" has to be answerable without re-running
+anything. Folders already on disk never move; the prefix decides where future documents are
+filed.
 
 ``legal_name`` is carried along for the human reading the file. Nothing depends on it.
 """

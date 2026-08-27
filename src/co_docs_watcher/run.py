@@ -28,11 +28,14 @@ from dataclasses import dataclass
 from co_docs_watcher.clock import Clock, RetentionWindow, window_ending
 from co_docs_watcher.config import Config
 from co_docs_watcher.cvm.cache import RegistryCache
+from co_docs_watcher.cvm.registry import Registry
 from co_docs_watcher.errors import (
     ExitCode,
     RegistryError,
     RequestBudgetExceededError,
     TransientSourceError,
+    WatchListConflictError,
+    WatchListError,
 )
 from co_docs_watcher.lock import RunLock
 from co_docs_watcher.manifest.db import open_manifest
@@ -55,6 +58,7 @@ from co_docs_watcher.pipeline import (
 from co_docs_watcher.rad import RadClient, RadSource
 from co_docs_watcher.rad.schema import parse_listing
 from co_docs_watcher.scope.models import WatchedCompany
+from co_docs_watcher.scope.resolver import settle
 from co_docs_watcher.scope.store import WatchList
 from co_docs_watcher.source import Source
 
@@ -192,8 +196,8 @@ def execute_run(
                 staging_root=config.staging_root,
                 max_attempts=config.max_document_attempts,
             )
-            registry_error = _refresh_registry(config, clock)
-            watched = WatchList.load(config.watch_list_path).companies
+            registry, registry_error = _refresh_registry(config, clock)
+            watched = _settled_companies(config, registry)
 
             if source is None:
                 with open_source(config) as built:
@@ -294,7 +298,7 @@ def _observe_and_fetch(
     return discovery, fetched, None
 
 
-def _refresh_registry(config: Config, clock: Clock) -> str | None:
+def _refresh_registry(config: Config, clock: Clock) -> tuple[Registry | None, str | None]:
     """Refresh the FCA cache if stale. Failure blocks new registrations, never monitoring.
 
     The watch list persists the resolved prefix of every company, so a run needs no registry
@@ -304,12 +308,39 @@ def _refresh_registry(config: Config, clock: Clock) -> str | None:
         config.registry_cache_root, max_age_days=config.registry_max_age_days
     )
     try:
-        cache.load(now=clock.now())
+        return cache.load(now=clock.now()), None
     except RegistryError as error:
         logger.warning(
             "registry: %s; monitoring continues on the watch list alone, "
             "but `add` will refuse until a package can be fetched",
             error,
         )
-        return str(error)
-    return None
+        return None, str(error)
+
+
+def _settled_companies(config: Config, registry: Registry | None) -> tuple[WatchedCompany, ...]:
+    """The watch list this run monitors, settled against the registry it just refreshed.
+
+    Settling is part of the registry step, not a step of its own, and it inherits the step's
+    grade of failure: no usable registry means no update and a run that monitors normally on
+    what the file already says. A save the hash guard refuses is a human edit made while the
+    run held the lock — the edit wins, the list is reloaded, and this run monitors what the
+    human wrote; a file that cannot be written at all costs only the persistence, since the
+    settled entries are already in memory and the next run derives them again.
+    """
+    watch_list = WatchList.load(config.watch_list_path)
+    if registry is None or not settle(
+        watch_list, registry, overrides=config.prefix_overrides
+    ):
+        return watch_list.companies
+    try:
+        watch_list.save()
+    except WatchListConflictError:
+        return WatchList.load(config.watch_list_path).companies
+    except WatchListError as error:
+        logger.warning(
+            "watch list: the settled entries could not be written (%s); this run uses them "
+            "and the next one derives them again",
+            error,
+        )
+    return watch_list.companies

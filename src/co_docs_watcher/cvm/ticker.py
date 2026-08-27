@@ -12,8 +12,8 @@ having no folder: the validated root, the reduced legal name, the zero-padded CV
 operator who disagrees with the outcome overrides it in the configuration file — a company
 trading under two unrelated codes has no right answer the rule could find.
 
-Everything here is pure. The folder name is a snapshot taken when a company is registered in
-the watch list; nothing in this module renames a folder that already exists.
+Everything here is pure. The folder name is a snapshot of what the company is called now,
+re-derived on every run; nothing in this module renames a folder that already exists.
 """
 
 from __future__ import annotations
