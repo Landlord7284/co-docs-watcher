@@ -93,9 +93,12 @@ class RegistryRecord:
 class Registry:
     """A set of registry records, indexed by the two identifiers that are unique.
 
-    Construction is where the 1:1 relation is enforced. A CVM code claimed by two different
-    CNPJs is a contract change and is logged ``CRITICAL``; the colliding record is left out of
-    the indexes and kept in ``records``, so the anomaly is visible instead of averaged away.
+    Construction is where the 1:1 relation is enforced, and in both directions: a CVM code
+    claimed by two different CNPJs and a CNPJ claiming two different CVM codes are the same
+    contract change seen from either end, and both are logged ``CRITICAL``. The colliding
+    record is left out of the index it collides in — and out of that one only, since a
+    collision on the code says nothing about the CNPJ — and kept in ``records``, so the
+    anomaly is visible instead of averaged away.
     """
 
     __slots__ = ("_by_cnpj", "_by_cvm_code", "_records")
@@ -105,21 +108,35 @@ class Registry:
         self._by_cvm_code: dict[str, RegistryRecord] = {}
         self._by_cnpj: dict[str, RegistryRecord] = {}
         for record in self._records:
-            held = self._by_cvm_code.get(record.cvm_code)
-            if held is not None and held.cnpj != record.cnpj:
+            by_cnpj = self._by_cnpj.get(record.cnpj)
+            if by_cnpj is not None and by_cnpj.cvm_code != record.cvm_code:
+                logger.critical(
+                    "registry: CNPJ %s claims two CVM codes (%s %r and %s %r); the CNPJ to "
+                    "code relation was 1:1 when last measured, so this is probably a contract "
+                    "change",
+                    record.cnpj,
+                    by_cnpj.cvm_code,
+                    by_cnpj.legal_name,
+                    record.cvm_code,
+                    record.legal_name,
+                )
+            else:
+                self._by_cnpj[record.cnpj] = record
+
+            by_code = self._by_cvm_code.get(record.cvm_code)
+            if by_code is not None and by_code.cnpj != record.cnpj:
                 logger.critical(
                     "registry: CVM code %s is claimed by two CNPJs (%s %r and %s %r); the "
                     "code to CNPJ relation was 1:1 when last measured, so this is probably a "
                     "contract change",
                     record.cvm_code,
-                    held.cnpj,
-                    held.legal_name,
+                    by_code.cnpj,
+                    by_code.legal_name,
                     record.cnpj,
                     record.legal_name,
                 )
                 continue
             self._by_cvm_code[record.cvm_code] = record
-            self._by_cnpj[record.cnpj] = record
 
     @property
     def records(self) -> tuple[RegistryRecord, ...]:
@@ -171,18 +188,34 @@ def parse_package(payload: bytes) -> Registry:
 
     latest = _latest_version_per_company(general)
     codes = _active_trading_codes(securities)
-    return Registry(
-        RegistryRecord(
-            cvm_code=normalize_cvm_code(row["Codigo_CVM"]),
+    return Registry(_records(latest, codes))
+
+
+def _records(
+    latest: Mapping[str, Mapping[str, str]],
+    codes: Mapping[tuple[str, str], tuple[str, ...]],
+) -> Iterator[RegistryRecord]:
+    for cnpj, row in sorted(latest.items()):
+        cvm_code = normalize_cvm_code(row["Codigo_CVM"])
+        if not cvm_code:
+            # The sweep is filtered against this code, so a company without one cannot be
+            # watched at all. Dropping it is right; dropping it in silence is not — this is
+            # the same loss the parser refuses everywhere else, one row at a time.
+            logger.warning(
+                "registry: skipping %r (CNPJ %s), whose CVM code is unusable (%r)",
+                row["Nome_Empresarial"].strip(),
+                cnpj,
+                row["Codigo_CVM"],
+            )
+            continue
+        yield RegistryRecord(
+            cvm_code=cvm_code,
             cnpj=cnpj,
             legal_name=row["Nome_Empresarial"].strip(),
             previous_legal_name=row["Nome_Empresarial_Anterior"].strip() or None,
             trading_codes=codes.get((cnpj, row["ID_Documento"].strip()), ()),
             registration_status=row["Situacao_Registro_CVM"].strip(),
         )
-        for cnpj, row in sorted(latest.items())
-        if normalize_cvm_code(row["Codigo_CVM"])
-    )
 
 
 def _read_member(
@@ -191,10 +224,27 @@ def _read_member(
     role: str,
     required: frozenset[str],
 ) -> list[Mapping[str, str]]:
-    names = [name for name in archive.namelist() if pattern.match(name)]
+    """Read one member into rows, refusing anything the rest of the parser could not read.
+
+    A row shorter than the header leaves ``csv.DictReader`` filling the columns it never
+    reached with ``None``, and every value below here is a string the parser strips. The
+    check belongs to this function rather than to the five places that would otherwise guard
+    against it: this is where a structural divergence already becomes a ``RegistryError``,
+    and a row that arrives half-written is a divergence like any other.
+    """
+    names = sorted(name for name in archive.namelist() if pattern.match(name))
     if not names:
         raise RegistryError(f"registry package has no {role} member matching {pattern.pattern}")
-    name = sorted(names)[-1]
+    if len(names) > 1:
+        # The year is part of every member name, so more than one match means the package
+        # carries two years at once. Picking one would silently join the general member of
+        # one year to the securities member of the other, and the join is on ``ID_Documento``:
+        # the answer would be a registry where no company trades anything.
+        raise RegistryError(
+            f"registry package has {len(names)} {role} members ({', '.join(names)}); one "
+            "package holds one year, so the registry format has probably changed"
+        )
+    name = names[0]
     info = archive.getinfo(name)
     if info.file_size > MAX_MEMBER_BYTES:
         raise RegistryError(
@@ -202,6 +252,10 @@ def _read_member(
             f"{MAX_MEMBER_BYTES} byte cap"
         )
     with archive.open(name) as raw:
+        # ``file_size`` is what the archive declares, and the reader stops there: a header
+        # that understates the member truncates the read and fails its CRC on the way out,
+        # which arrives above as a corrupt package. So the cap checked against the claim is
+        # the cap, and the extra byte here only makes the boundary case unambiguous.
         text = raw.read(MAX_MEMBER_BYTES + 1).decode(PACKAGE_ENCODING)
     reader = csv.DictReader(io.StringIO(text, newline=""), delimiter=PACKAGE_DELIMITER)
     missing = sorted(required - set(reader.fieldnames or ()))
@@ -210,7 +264,19 @@ def _read_member(
             f"registry member {name} is missing column(s): {', '.join(missing)}; the registry "
             "format has probably changed"
         )
-    return [row for row in reader if row.get("CNPJ_Companhia")]
+    rows: list[Mapping[str, str]] = []
+    for row in reader:
+        if not row.get("CNPJ_Companhia"):
+            continue
+        unfilled = sorted(column for column in required if not isinstance(row.get(column), str))
+        if unfilled:
+            raise RegistryError(
+                f"registry member {name} has a row (line {reader.line_num}) shorter than its "
+                f"header, with no value at all for column(s): {', '.join(unfilled)}; the "
+                "registry format has probably changed"
+            )
+        rows.append(row)
+    return rows
 
 
 def _latest_version_per_company(rows: Sequence[Mapping[str, str]]) -> dict[str, Mapping[str, str]]:
@@ -228,18 +294,20 @@ def _latest_version_per_company(rows: Sequence[Mapping[str, str]]) -> dict[str, 
                 "registry: skipping a row with an unusable CNPJ %r", row["CNPJ_Companhia"]
             )
             continue
-        rank = (_as_int(row["Versao"]), _as_int(row["ID_Documento"]))
+        rank = (
+            _as_int(row["Versao"], "Versao", cnpj),
+            _as_int(row["ID_Documento"], "ID_Documento", cnpj),
+        )
         held = latest.get(cnpj)
-        if held is not None and normalize_cvm_code(held["Codigo_CVM"]) != normalize_cvm_code(
-            row["Codigo_CVM"]
-        ):
+        code = normalize_cvm_code(row["Codigo_CVM"])
+        if held is not None and normalize_cvm_code(held["Codigo_CVM"]) != code:
             logger.critical(
                 "registry: CNPJ %s carries two CVM codes across versions (%s and %s); the CNPJ "
                 "to code relation was 1:1 when last measured, so this is probably a contract "
                 "change",
                 cnpj,
                 normalize_cvm_code(held["Codigo_CVM"]),
-                normalize_cvm_code(row["Codigo_CVM"]),
+                code,
             )
         if held is None or rank > ranks[cnpj]:
             latest[cnpj] = row
@@ -273,8 +341,23 @@ def _active_trading_codes(
     return {key: tuple(sorted(codes)) for key, codes in grouped.items()}
 
 
-def _as_int(value: str) -> int:
+def _as_int(value: str, column: str, cnpj: str) -> int:
+    """The column as an integer, or ``-1`` with a reason on the log.
+
+    The two columns this reads order the versions of one company, so a value that is not a
+    number ranks the row below every readable one — which is the safe answer, and exactly the
+    kind of answer that must not be reached quietly: a company frozen on an old version
+    because its newest one has an unreadable ``Versao`` looks like a company that stopped
+    filing.
+    """
     try:
         return int(value.strip())
-    except (AttributeError, ValueError):
+    except ValueError:
+        logger.warning(
+            "registry: CNPJ %s has an unreadable %s (%r); the row is ranked below every "
+            "readable version of the same company",
+            cnpj,
+            column,
+            value,
+        )
         return -1

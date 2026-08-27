@@ -94,6 +94,33 @@ def test_a_cvm_code_claimed_by_two_companies_is_logged_as_a_contract_change(
     assert len(parsed.records) == 2
 
 
+def test_a_cnpj_claiming_two_cvm_codes_is_logged_and_the_first_one_is_kept(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The relation is 1:1 in both directions, so the anomaly is the same one seen from the
+    # other end: a CNPJ under two codes must not resolve to whichever record came last.
+    first = RegistryRecord("009512", "33000167000101", "PETROBRAS", None, (), "Ativo")
+    second = RegistryRecord("009999", "33000167000101", "PETROBRAS OUTRA", None, (), "Ativo")
+
+    with caplog.at_level(logging.CRITICAL):
+        parsed = Registry([first, second])
+
+    assert "claims two CVM codes" in caplog.text
+    assert parsed.by_cnpj("33000167000101") is first
+
+
+def test_a_code_collision_does_not_cost_the_record_its_cnpj() -> None:
+    # The colliding record leaves the code index and that one only: its CNPJ is unique and
+    # has done nothing wrong, and dropping it would lose a company over another one's clash.
+    held = RegistryRecord("009512", "33000167000101", "PETROBRAS", None, (), "Ativo")
+    colliding = RegistryRecord("009512", "33592510000154", "VALE", None, (), "Ativo")
+
+    parsed = Registry([held, colliding])
+
+    assert parsed.by_cvm_code("009512") is held
+    assert parsed.by_cnpj("33592510000154") is colliding
+
+
 def test_a_cnpj_that_changes_cvm_code_across_versions_is_logged(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -134,6 +161,69 @@ def test_a_missing_column_is_refused_as_a_format_change() -> None:
 
     with pytest.raises(RegistryError, match="Nome_Empresarial_Anterior"):
         parse_package(fca.build_package(general_columns=without_previous_name))
+
+
+def test_a_row_shorter_than_its_header_is_refused_as_a_format_change() -> None:
+    # A column dropped from a single row leaves ``DictReader`` filling it with ``None``, and
+    # every value below the parser is a string it strips: the divergence has to stop here.
+    header = fca.DELIMITER.join(fca.GENERAL_COLUMNS)
+    short = fca.DELIMITER.join([fca.PETROBRAS, "", "1", "156276", "PETROLEO BRASILEIRO S.A."])
+    members = {
+        "fca_cia_aberta_geral_2026.csv": f"{header}\r\n{short}\r\n".encode(fca.ENCODING),
+        "fca_cia_aberta_valor_mobiliario_2026.csv": fca.csv_member(
+            fca.SECURITIES_COLUMNS, fca.SECURITIES_ROWS
+        ),
+    }
+
+    with pytest.raises(RegistryError, match="shorter than its header"):
+        parse_package(fca.build_package(members=members))
+
+
+def test_a_package_carrying_two_years_at_once_is_refused() -> None:
+    # The join between the two members is on ``ID_Documento``: pairing the general member of
+    # one year with the securities member of another answers a registry that trades nothing.
+    both_years = {
+        "fca_cia_aberta_geral_2025.csv": fca.csv_member(fca.GENERAL_COLUMNS, fca.GENERAL_ROWS),
+        "fca_cia_aberta_geral_2026.csv": fca.csv_member(fca.GENERAL_COLUMNS, fca.GENERAL_ROWS),
+        "fca_cia_aberta_valor_mobiliario_2026.csv": fca.csv_member(
+            fca.SECURITIES_COLUMNS, fca.SECURITIES_ROWS
+        ),
+    }
+
+    with pytest.raises(RegistryError, match="2 general members"):
+        parse_package(fca.build_package(members=both_years))
+
+
+def test_a_company_dropped_for_an_unusable_cvm_code_says_so(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The sweep is filtered against the code, so the company cannot be watched — but a
+    # company leaving the registry in silence is the failure this parser exists to refuse.
+    codeless = dict(fca.GENERAL_ROWS[0]) | {"Codigo_CVM": "n/a"}
+
+    with caplog.at_level(logging.WARNING):
+        parsed = parse_package(fca.build_package(general=[codeless, fca.GENERAL_ROWS[1]]))
+
+    assert "CVM code is unusable" in caplog.text
+    assert parsed.by_cnpj(fca.PETROBRAS) is None
+    assert parsed.by_cnpj(fca.VALE) is not None
+
+
+def test_an_unreadable_version_ranks_last_and_is_reported(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    readable = dict(fca.GENERAL_ROWS[0]) | {"Versao": "1", "ID_Documento": "156276"}
+    unreadable = dict(fca.GENERAL_ROWS[0]) | {
+        "Versao": "n/a",
+        "ID_Documento": "160575",
+        "Nome_Empresarial": "PETROLEO BRASILEIRO S.A. PETROBRAS (NOVO)",
+    }
+
+    with caplog.at_level(logging.WARNING):
+        parsed = parse_package(fca.build_package(general=[readable, unreadable]))
+
+    assert "unreadable Versao" in caplog.text
+    assert parsed.by_cnpj(fca.PETROBRAS).legal_name == "PETROLEO BRASILEIRO S.A. PETROBRAS"
 
 
 def test_merging_years_lets_the_newer_filing_win() -> None:
