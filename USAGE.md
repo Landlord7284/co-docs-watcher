@@ -233,9 +233,12 @@ nothing in `src/` knows the container exists.
 
 ```bash
 cp config.example.toml config.toml   # windows, retention, modes — the same file a hand-run reads
-cp .env.example .env                 # schedules, identity, the host paths
-docker compose up -d --build
+cp .env.example .env                 # the image tag, schedules, identity, the host paths
+docker compose up -d
 ```
+
+The image is pulled, not built: `ghcr.io/landlord7284/co-docs-watcher`, published by the
+`docker-publish` workflow for `linux/amd64` and `linux/arm64`.
 
 ### The two profiles, and why both
 
@@ -259,6 +262,30 @@ would cost about 119 listings a day against 41.
 Only the full sweep advances the last-completed-sweep watermark. Turn the sweep off with
 `SWEEP_ENABLED=false` and the staleness warning fires on every run — losing the older days is
 allowed, losing them quietly is not.
+
+### The image, and how it is updated
+
+A push to `main` publishes `latest`. A `v*` git tag publishes the version and its
+major.minor — `v0.1.0` becomes `0.1.0` and `0.1` — and every build is also published under
+`sha-<short>`, which is what a rollback names. Nothing is published from a tree that does not
+lint and test: the publish workflow runs the CI workflow first and needs it to pass.
+
+`IMAGE_TAG` in `.env` chooses what this host follows. `latest` takes every push to `main`;
+`0.1` takes patches and never a `0.2`; `0.1.0` never moves at all. Whichever it is, updating
+is two commands:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+The second one is not optional. A pull that is never brought up leaves the running container
+on the old image, in silence — the same failure that keeps `docker exec` out of this
+deployment.
+
+The git tag and `version` in `pyproject.toml` are one number: `--version` reports what the
+package declares, so a `v0.2.0` tagged over a `0.1.0` `pyproject` publishes an image that
+introduces itself as the version it is not.
 
 ### The container shape
 

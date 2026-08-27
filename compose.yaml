@@ -1,7 +1,6 @@
 services:
   watcher:
-    build: .
-    image: co-docs-watcher:local
+    image: ghcr.io/landlord7284/co-docs-watcher:${IMAGE_TAG:-latest}
     restart: unless-stopped
     init: true
     read_only: true

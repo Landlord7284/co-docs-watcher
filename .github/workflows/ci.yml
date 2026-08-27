@@ -3,6 +3,8 @@ name: ci
 on:
   push:
   pull_request:
+  # docker-publish runs this before it publishes anything.
+  workflow_call:
 
 jobs:
   check:

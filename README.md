@@ -59,13 +59,16 @@ you run it by hand or from cron.
 
 ```bash
 cp config.example.toml config.toml   # windows, retention, modes
-cp .env.example .env                 # schedules, identity, host paths
-docker compose up -d --build
+cp .env.example .env                 # image tag, schedules, identity, host paths
+docker compose up -d
 ```
 
-The image runs [supercronic](https://github.com/aptible/supercronic) against a crontab
-rendered from `.env`, and fires the same one-shot a shell would. `config.toml` is mounted, not
-duplicated.
+The image is published to `ghcr.io/landlord7284/co-docs-watcher` — `latest` from `main`, and
+`X.Y.Z` plus `X.Y` from every `v*` tag. `IMAGE_TAG` in `.env` chooses which, and updating is
+`docker compose pull && docker compose up -d`.
+
+Inside, [supercronic](https://github.com/aptible/supercronic) runs a crontab rendered from
+`.env` and fires the same one-shot a shell would. `config.toml` is mounted, not duplicated.
 
 ## Documentation
 
