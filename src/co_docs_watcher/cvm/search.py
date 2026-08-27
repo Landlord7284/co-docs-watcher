@@ -13,6 +13,7 @@ a person remembers is very often the one the company dropped.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -24,6 +25,9 @@ __all__ = ["MatchKind", "SearchResult", "search"]
 
 #: What a CVM code may be typed as: digits, with or without the listing's hyphen.
 _CVM_CODE_QUERY = re.compile(r"^\d{1,6}$|^\d{1,5}-\d$")
+
+#: One stage of the chain: a registry and a query in, everything that stage matched out.
+_Stage = Callable[[Registry, str], tuple[RegistryRecord, ...]]
 
 
 class MatchKind(StrEnum):
@@ -59,13 +63,8 @@ class SearchResult:
 
 def search(registry: Registry, query: str) -> SearchResult:
     """Walk the chain and return the first stage that matched anything."""
-    for kind, matches in (
-        (MatchKind.TICKER, _by_ticker(registry, query)),
-        (MatchKind.CNPJ, _by_cnpj(registry, query)),
-        (MatchKind.CVM_CODE, _by_cvm_code(registry, query)),
-        (MatchKind.LEGAL_NAME, _by_legal_name(registry, query)),
-        (MatchKind.PREVIOUS_LEGAL_NAME, _by_previous_legal_name(registry, query)),
-    ):
+    for kind, stage in _CHAIN:
+        matches = stage(registry, query)
         if matches:
             return SearchResult(kind, matches)
     return SearchResult(None, ())
@@ -116,3 +115,15 @@ def _by_previous_legal_name(registry: Registry, query: str) -> tuple[RegistryRec
         for record in registry
         if record.previous_legal_name and key in normalize_key(record.previous_legal_name)
     )
+
+
+#: The chain, in the order a match means something. Held as the functions themselves rather
+#: than as their results, so that walking it stops where it matches: the two name stages scan
+#: every record in the registry, and a query answered by its ticker must not pay for them.
+_CHAIN: tuple[tuple[MatchKind, _Stage], ...] = (
+    (MatchKind.TICKER, _by_ticker),
+    (MatchKind.CNPJ, _by_cnpj),
+    (MatchKind.CVM_CODE, _by_cvm_code),
+    (MatchKind.LEGAL_NAME, _by_legal_name),
+    (MatchKind.PREVIOUS_LEGAL_NAME, _by_previous_legal_name),
+)
