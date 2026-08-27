@@ -22,6 +22,7 @@ from co_docs_watcher.errors import ExitCode
 from co_docs_watcher.lock import RunLock
 from co_docs_watcher.manifest.db import open_manifest
 from co_docs_watcher.manifest.repo import AttemptOutcome, Manifest
+from tests import fca
 from tests.fca import build_package
 from tests.test_models import make_document
 from tests.test_summary import STEPS, make_report
@@ -318,6 +319,122 @@ def test_doctor_fails_on_a_tz_that_contradicts_the_source_timezone(
 
     out = capsys.readouterr().out
     assert "FAIL  process TZ: Asia/Tokyo contradicts source.timezone=America/Sao_Paulo" in out
+
+
+WATCHED_ODONTOPREV = """\
+companies:
+  - cvm_code: '020125'
+    prefix: ODPV
+    prefix_source: ticker
+    matched_by: ticker
+    legal_name: ODONTOPREV S.A.
+"""
+
+
+def _renamed_cache(config_file: Path) -> None:
+    """The cached 2026 package carries the rename the stored entry has not seen yet."""
+    config = load_config(config_file)
+    (config.registry_cache_root / "fca_cia_aberta_2026.zip").write_bytes(
+        build_package(
+            year=2026,
+            general=[*fca.GENERAL_ROWS, fca.BRADSAUDE_GENERAL_2026],
+            securities=[*fca.SECURITIES_ROWS, fca.BRADSAUDE_SECURITIES_2026],
+        )
+    )
+
+
+def _doctor(config_file: Path, monkeypatch: pytest.MonkeyPatch) -> int:
+    monkeypatch.delenv("TZ", raising=False)
+    monkeypatch.setattr(cli, "probe_source", lambda config: "probed without the network")
+    return cli.main(["--config", str(config_file), "doctor"])
+
+
+def test_doctor_reports_drift_between_the_watch_list_and_the_registry(
+    config_file: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rename is a finding, never a red line: the next run settles it, and a drift that
+    failed the command would train its reader to ignore failures."""
+    config = load_config(config_file)
+    (config.data_root / "companies.yaml").write_text(WATCHED_ODONTOPREV, encoding="utf-8")
+    _renamed_cache(config_file)
+
+    assert _doctor(config_file, monkeypatch) == 0
+
+    out = capsys.readouterr().out
+    assert (
+        "ok    watch list vs registry: 020125 stored as ODPV/ODONTOPREV S.A., "
+        "registry says SAUD/BRADSAÚDE S.A. "
+        "(the next run moves the prefix; ODPV/ keeps the days already written)" in out
+    )
+
+
+def test_doctor_says_so_when_the_watch_list_and_the_registry_agree(
+    config_file: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = load_config(config_file)
+    (config.data_root / "companies.yaml").write_text(WATCH_LIST, encoding="utf-8")
+
+    assert _doctor(config_file, monkeypatch) == 0
+
+    out = capsys.readouterr().out
+    assert "watch list vs registry: 1 stored entry(ies) agree with the cached registry" in out
+
+
+def test_doctor_reports_absence_from_the_registry_as_absence_not_drift(
+    config_file: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = load_config(config_file)
+    (config.data_root / "companies.yaml").write_text(
+        WATCH_LIST.replace("'009512'", "'007617'"), encoding="utf-8"
+    )
+
+    assert _doctor(config_file, monkeypatch) == 0
+
+    out = capsys.readouterr().out
+    assert (
+        "watch list vs registry: 007617 is not in the cached registry (left alone; "
+        "a yearly package only holds companies that filed that year)" in out
+    )
+    assert "stored as" not in out
+
+
+def test_doctor_with_no_cached_registry_says_so_once(
+    config_file: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = load_config(config_file)
+    (config.data_root / "companies.yaml").write_text(WATCH_LIST, encoding="utf-8")
+    for year in (2025, 2026):
+        (config.registry_cache_root / f"fca_cia_aberta_{year}.zip").unlink()
+
+    assert _doctor(config_file, monkeypatch) == 0
+
+    out = capsys.readouterr().out
+    assert out.count("watch list vs registry") == 1
+    assert "watch list vs registry: not compared" in out
+
+
+def test_doctor_names_the_override_that_keeps_a_prefix_from_following_the_ticker(
+    config_file: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_file.write_text(
+        config_file.read_text(encoding="utf-8")
+        + '\n[prefix_overrides]\n"020125" = "DENTAL"\n',
+        encoding="utf-8",
+    )
+    config = load_config(config_file)
+    (config.data_root / "companies.yaml").write_text(
+        WATCHED_ODONTOPREV.replace("prefix: ODPV", "prefix: DENTAL").replace(
+            "prefix_source: ticker", "prefix_source: override"
+        ),
+        encoding="utf-8",
+    )
+    _renamed_cache(config_file)
+
+    assert _doctor(config_file, monkeypatch) == 0
+
+    out = capsys.readouterr().out
+    assert "[prefix_overrides] names the prefix DENTAL" in out
+    assert "the folder stays DENTAL/" in out
 
 
 def test_status_labels_retention_and_reports_both_discovery_windows(

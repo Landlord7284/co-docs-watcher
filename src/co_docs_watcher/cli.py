@@ -24,6 +24,7 @@ import logging
 import os
 import sys
 from collections.abc import Sequence
+from datetime import datetime
 from pathlib import Path
 
 from co_docs_watcher import __version__
@@ -32,12 +33,14 @@ from co_docs_watcher.config import Config, load_config
 from co_docs_watcher.cvm.cache import RegistryCache
 from co_docs_watcher.cvm.registry import Registry, RegistryRecord
 from co_docs_watcher.cvm.search import MatchKind, SearchResult
+from co_docs_watcher.cvm.ticker import PrefixSource, company_prefix
 from co_docs_watcher.errors import (
     AmbiguousQueryError,
     CaptchaRequiredError,
     CompanyError,
     ConfigError,
     ExitCode,
+    RegistryError,
     SourceError,
     WatcherError,
     exit_code_for,
@@ -199,12 +202,13 @@ def _cmd_doctor(config: Config, args: argparse.Namespace) -> ExitCode:
     for finding in _window_findings(config):
         findings.append((True, finding))
 
+    watched: tuple[WatchedCompany, ...] | None = None
     try:
-        companies = WatchList.load(config.watch_list_path).companies
+        watched = WatchList.load(config.watch_list_path).companies
     except WatcherError as error:
         findings.append((False, f"watch list: {error}"))
     else:
-        findings.append((True, f"watch list: {len(companies)} company(ies)"))
+        findings.append((True, f"watch list: {len(watched)} company(ies)"))
 
     now = Clock.installed().now()
     cache = RegistryCache(config.registry_cache_root, max_age_days=config.registry_max_age_days)
@@ -213,6 +217,8 @@ def _cmd_doctor(config: Config, args: argparse.Namespace) -> ExitCode:
         for year in (now.year - 1, now.year)
     )
     findings.append((True, f"registry cache: {ages} (refreshed by `run` and `add`)"))
+    if watched is not None:
+        findings.extend(_drift_findings(config, watched, cache, now))
 
     captcha = False
     try:
@@ -249,6 +255,63 @@ def _window_findings(config: Config) -> list[str]:
             f"{label}: {window.first} .. {window.last} "
             f"({window.days} dates), swept by `{command}`"
         )
+    return lines
+
+
+def _drift_findings(
+    config: Config,
+    watched: tuple[WatchedCompany, ...],
+    cache: RegistryCache,
+    now: datetime,
+) -> list[tuple[bool, str]]:
+    """Every watched company whose stored entry differs from the cached registry.
+
+    Read with ``refresh=False``: ``doctor`` diagnoses without going to the network, and a
+    run right after it would refresh anyway. Drift never fails the command — the next run
+    settles it, and a finding that turned a rename into a red line would train its reader
+    to ignore red lines. Silence when everything agrees would be the wrong answer too, so
+    agreement is a line of its own.
+    """
+    label = "watch list vs registry"
+    if not watched:
+        return [(True, f"{label}: nothing is watched, nothing to compare")]
+    try:
+        registry = cache.load(now=now, refresh=False)
+    except RegistryError as error:
+        return [(True, f"{label}: not compared ({error})")]
+
+    lines: list[tuple[bool, str]] = []
+    for company in watched:
+        record = registry.by_cvm_code(company.cvm_code)
+        if record is None:
+            lines.append(
+                (
+                    True,
+                    f"{label}: {company.cvm_code} is not in the cached registry (left "
+                    "alone; a yearly package only holds companies that filed that year)",
+                )
+            )
+            continue
+        expected = company_prefix(record, overrides=config.prefix_overrides)
+        if expected.value == company.prefix and record.legal_name == company.legal_name:
+            continue
+        derived = company_prefix(record)
+        finding = (
+            f"{label}: {company.cvm_code} stored as {company.prefix}/{company.legal_name}, "
+            f"registry says {derived.value}/{record.legal_name}"
+        )
+        if expected.source is PrefixSource.OVERRIDE:
+            finding += f"; [prefix_overrides] names the prefix {expected.value}"
+        if expected.value != company.prefix:
+            finding += (
+                f" (the next run moves the prefix; {company.prefix}/ keeps the days "
+                "already written)"
+            )
+        else:
+            finding += f" (the next run updates the entry; the folder stays {company.prefix}/)"
+        lines.append((True, finding))
+    if not lines:
+        return [(True, f"{label}: {len(watched)} stored entry(ies) agree with the cached registry")]
     return lines
 
 
