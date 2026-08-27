@@ -338,19 +338,15 @@ whether the share can read the files at all. The entrypoint drops from root to t
 before it does anything else, and never chowns a mount: a mount whose owner is wrong is a
 decision you have to see.
 
-### One configuration file
+### The mounts
 
-There is no container configuration. `config.toml` — the file described under
-[Configuration](#configuration), the one a hand-run reads — is mounted into the container, and
-the container is shaped like a checkout so that it fits: the file at `/watcher/config.toml`,
-and the three host directories mounted at `/watcher/var/data`, `/watcher/var/documents` and
-`/watcher/var/logs`, which is exactly where its relative roots resolve.
-
-A second file would have duplicated everything *except* the paths — `retention`, `discovery`,
-`files`, `source` — and two copies of a value that must not differ is a way for it to differ.
-So the split is by question rather than by copy: `.env` names where the directories live on
-the **host** and when the profiles fire; `config.toml` names how far back to look, how long to
-keep, and which modes to write with, on either side of the mount.
+The container is shaped like a checkout: `config.toml` at `/watcher/config.toml`, and the three
+host directories at `/watcher/var/data`, `/watcher/var/documents` and `/watcher/var/logs`, which
+is exactly where that file's relative roots resolve. It is the file described under
+[Configuration](#configuration), mounted rather than copied. The split is by question: `.env`
+names where the directories live on the **host** and when the profiles fire; `config.toml` names
+how far back to look, how long to keep, and which modes to write with, on either side of the
+mount.
 
 Copy it before the first start. Docker creates a *directory* where a bind mount's source is
 missing, so a container started without the copy would mount an empty directory over its own
