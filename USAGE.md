@@ -180,6 +180,39 @@ give up the older days deliberately or keep the daily `run`.
 A registry that cannot be refreshed, or a document that cannot be fetched, is reported
 and skipped: the run finishes and exits `1`.
 
+Every run ends by printing what it did, one row per step, in the order the steps ran:
+
+```
+windows    discovery 2026-08-23 .. 2026-08-24 (2 dates), retention 2026-08-18 .. 2026-08-24 (7 dates)
+reconcile  recovered=0 requeued=0 failed=0 enacted=0 files_removed=0 staging_discarded=0
+registry   available
+discovery  rows=902 watched=7 queued=1 skipped=0 unchanged=6 deactivated=0 cancelled=0 refused=0
+fetch      available=1 retrying=0 failed=0 bytes=2,307,427
+purge      documents=0 dates=0 indexes=0 unremoved=0
+inbox      written=1 unchanged=0 removed=0 entries=1 refused=0 today=_inbox/2026-08-24.md
+result     clean (exit 0)
+```
+
+The table is the same eight rows every time and every counter is always printed, so a run
+that did nothing reads as a run that did nothing rather than as a run that said nothing.
+What is worth knowing about the rows:
+
+- `discovery` — `rows` is everything the sweep saw, market-wide; `watched` is the part of
+  it belonging to a watched company and falling inside the window; `refused` counts rows
+  the manifest would not accept.
+- `fetch` — `bytes` is what the successful downloads weigh **in the archive**, members of
+  an extracted container included, and not what came over the wire.
+- `purge` — `unremoved` counts date directories that would not delete; their manifest rows
+  are kept, because the rows are the only record of where those files are.
+- `inbox` — `today` is the day's index, named relative to `documents_root`, or `none` when
+  today has nothing to report and no index was written.
+- `registry` — `available`, or why not: a failed refresh costs `add`, never the run.
+- `result` — the verdict and the exit code the process returns. A run the source cut short
+  says so here, and says that the counters above it are a partial count.
+
+`discovery` and `fetch` read `not reached` when a captcha or the request budget stopped the
+network work before them — zeros would be a measurement nobody took.
+
 ### `reconcile`
 
 Startup reconciliation, on demand: resolves downloads a dead run left in flight, enacts

@@ -51,6 +51,19 @@ co-docs-watcher status            # what is on disk, and what is still owed
 have — cron, launchd, a shell loop — or use the container below, which carries its own
 scheduler. The usual pairing is a frequent `run --monitor` plus one daily `run`.
 
+Every run ends by saying what it did, one row per step:
+
+```
+windows    discovery 2026-08-23 .. 2026-08-24 (2 dates), retention 2026-08-18 .. 2026-08-24 (7 dates)
+reconcile  recovered=0 requeued=0 failed=0 enacted=0 files_removed=0 staging_discarded=0
+registry   available
+discovery  rows=902 watched=7 queued=1 skipped=0 unchanged=6 deactivated=0 cancelled=0 refused=0
+fetch      available=1 retrying=0 failed=0 bytes=2,307,427
+purge      documents=0 dates=0 indexes=0 unremoved=0
+inbox      written=1 unchanged=0 removed=0 entries=1 refused=0 today=_inbox/2026-08-24.md
+result     clean (exit 0)
+```
+
 Roots written relative in `config.toml` resolve against the configuration file's own
 directory, so a checkout with a `config.toml` beside it archives into its own `var/` whether
 you run it by hand or from cron.
