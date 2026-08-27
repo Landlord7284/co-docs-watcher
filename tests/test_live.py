@@ -183,10 +183,10 @@ def test_a_download_matches_the_sniffing_table(
     The signature is the whole contract, and this asserts exactly that and no more.
     """
     document = _pick(documents, structured=None)
-    raw = client.fetch_document(document.document_id, document.version, document.protocol)
-    assert raw.content.startswith(MAGICS), (
+    content = client.fetch_document(document.document_id, document.version, document.protocol)
+    assert content.startswith(MAGICS), (
         f"document {document.identity} ({document.category}) starts with "
-        f"{raw.content[:16]!r}, which matches nothing in the sniffing table; {DIVERGED}"
+        f"{content[:16]!r}, which matches nothing in the sniffing table; {DIVERGED}"
     )
 
 

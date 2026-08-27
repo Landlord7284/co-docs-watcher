@@ -18,10 +18,14 @@ import pytest
 
 from co_docs_watcher.clock import RetentionWindow, window_ending
 from co_docs_watcher.config import (
+    DEFAULT_BACKOFF_FACTOR,
     DEFAULT_DIRECTORY_MODE,
     DEFAULT_FILE_MODE,
     DEFAULT_LOG_BACKUPS,
     DEFAULT_LOG_MAX_BYTES,
+    DEFAULT_MAX_DOWNLOAD_BYTES,
+    DEFAULT_MAX_EXTRACTED_BYTES,
+    DEFAULT_MAX_LISTING_BYTES,
     Config,
 )
 from co_docs_watcher.errors import (
@@ -91,6 +95,12 @@ def config(tmp_path: Path) -> Config:
         monitor_days=2,
         min_request_interval=0.01,
         max_requests_per_run=200,
+        max_listing_bytes=DEFAULT_MAX_LISTING_BYTES,
+        max_download_bytes=DEFAULT_MAX_DOWNLOAD_BYTES,
+        max_extracted_bytes=DEFAULT_MAX_EXTRACTED_BYTES,
+        retries=0,
+        backoff_initial=0.01,
+        backoff_factor=DEFAULT_BACKOFF_FACTOR,
         registry_max_age_days=7,
         source_base_url="http://localhost:9/",
         prefix_overrides={},

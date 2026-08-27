@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 from pathlib import Path
 
 import pytest
@@ -10,15 +11,21 @@ import pytest
 from co_docs_watcher.archive_modes import ArchiveModes
 from co_docs_watcher.config import (
     CONFIG_ENV_VAR,
+    DEFAULT_BACKOFF_FACTOR,
+    DEFAULT_BACKOFF_INITIAL,
     DEFAULT_DIRECTORY_MODE,
     DEFAULT_FILE_MODE,
     DEFAULT_LOG_BACKUPS,
     DEFAULT_LOG_MAX_BYTES,
+    DEFAULT_MAX_DOWNLOAD_BYTES,
+    DEFAULT_MAX_EXTRACTED_BYTES,
+    DEFAULT_MAX_LISTING_BYTES,
     DEFAULT_MAX_REQUESTS_PER_RUN,
     DEFAULT_MIN_REQUEST_INTERVAL,
     DEFAULT_MONITOR_DAYS,
     DEFAULT_REGISTRY_MAX_AGE_DAYS,
     DEFAULT_RETENTION_DAYS,
+    DEFAULT_RETRIES,
     DEFAULT_TIMEZONE,
     discover_config_path,
     load_config,
@@ -104,11 +111,97 @@ def test_documented_defaults_apply_when_the_file_omits_them(tmp_path: Path) -> N
     assert config.retention_days == DEFAULT_RETENTION_DAYS
     assert config.min_request_interval == DEFAULT_MIN_REQUEST_INTERVAL
     assert config.max_requests_per_run == DEFAULT_MAX_REQUESTS_PER_RUN
+    assert config.max_listing_bytes == DEFAULT_MAX_LISTING_BYTES
+    assert config.max_download_bytes == DEFAULT_MAX_DOWNLOAD_BYTES
+    assert config.max_extracted_bytes == DEFAULT_MAX_EXTRACTED_BYTES
+    assert config.retries == DEFAULT_RETRIES
+    assert config.backoff_initial == DEFAULT_BACKOFF_INITIAL
+    assert config.backoff_factor == DEFAULT_BACKOFF_FACTOR
     assert config.registry_max_age_days == DEFAULT_REGISTRY_MAX_AGE_DAYS
     assert config.discovery_days == DEFAULT_RETENTION_DAYS
     assert config.monitor_days == DEFAULT_MONITOR_DAYS
     assert config.directory_mode == DEFAULT_DIRECTORY_MODE
     assert config.file_mode == DEFAULT_FILE_MODE
+
+
+def test_the_shipped_example_loads_and_shows_the_defaults(tmp_path: Path) -> None:
+    """The example is copied to make a first configuration, so a key the schema does not know
+    is a first run that refuses to start — and every value in it claims to be the default."""
+    example = Path(__file__).resolve().parent.parent / "config.example.toml"
+    shutil.copy(example, tmp_path / "config.toml")
+
+    config = load_config(env={}, cwd=tmp_path, home=tmp_path)
+
+    assert config.timezone_name == DEFAULT_TIMEZONE
+    assert config.retention_days == DEFAULT_RETENTION_DAYS
+    assert config.discovery_days == DEFAULT_RETENTION_DAYS
+    assert config.monitor_days == DEFAULT_MONITOR_DAYS
+    assert config.registry_max_age_days == DEFAULT_REGISTRY_MAX_AGE_DAYS
+    assert config.log_max_bytes == DEFAULT_LOG_MAX_BYTES
+    assert config.log_backups == DEFAULT_LOG_BACKUPS
+    assert (config.directory_mode, config.file_mode) == (DEFAULT_DIRECTORY_MODE, DEFAULT_FILE_MODE)
+    assert config.min_request_interval == DEFAULT_MIN_REQUEST_INTERVAL
+    assert config.max_requests_per_run == DEFAULT_MAX_REQUESTS_PER_RUN
+    assert config.max_listing_bytes == DEFAULT_MAX_LISTING_BYTES
+    assert config.max_download_bytes == DEFAULT_MAX_DOWNLOAD_BYTES
+    assert config.max_extracted_bytes == DEFAULT_MAX_EXTRACTED_BYTES
+    assert config.retries == DEFAULT_RETRIES
+    assert config.backoff_initial == DEFAULT_BACKOFF_INITIAL
+    assert config.backoff_factor == DEFAULT_BACKOFF_FACTOR
+
+
+def test_the_caps_and_the_retry_policy_are_read_from_the_file(tmp_path: Path) -> None:
+    write(
+        tmp_path / "config.toml",
+        VALID
+        + """
+[source]
+max_listing_bytes = 1024
+max_download_bytes = 2048
+max_extracted_bytes = 4096
+retries = 1
+backoff_initial = 20.0
+backoff_factor = 1.5
+""",
+    )
+    config = load_config(env={}, cwd=tmp_path, home=tmp_path)
+    assert (config.max_listing_bytes, config.max_download_bytes) == (1024, 2048)
+    assert config.max_extracted_bytes == 4096
+    assert (config.retries, config.backoff_initial, config.backoff_factor) == (1, 20.0, 1.5)
+
+
+def test_no_retries_at_all_is_a_policy_and_a_negative_count_is_not(tmp_path: Path) -> None:
+    write(tmp_path / "config.toml", VALID + "\n[source]\nretries = 0\n")
+    assert load_config(env={}, cwd=tmp_path, home=tmp_path).retries == 0
+
+    write(tmp_path / "config.toml", VALID + "\n[source]\nretries = -1\n")
+    with pytest.raises(ConfigError, match="retries must be an integer >= 0"):
+        load_config(env={}, cwd=tmp_path, home=tmp_path)
+
+
+def test_a_backoff_factor_below_one_is_refused(tmp_path: Path) -> None:
+    # A factor under 1 shrinks the wait on every attempt, which is not a backoff.
+    write(tmp_path / "config.toml", VALID + "\n[source]\nbackoff_factor = 0.5\n")
+    with pytest.raises(ConfigError, match="backoff_factor must be a number >= 1"):
+        load_config(env={}, cwd=tmp_path, home=tmp_path)
+
+
+def test_a_written_backoff_below_the_request_floor_is_refused(tmp_path: Path) -> None:
+    # Both waits happen before a retry and the floor covers what the backoff left, so a
+    # backoff under it is a number with no effect — refused rather than silently overridden.
+    write(
+        tmp_path / "config.toml",
+        VALID + "\n[source]\nmin_request_interval = 30.0\nbackoff_initial = 10.0\n",
+    )
+    with pytest.raises(ConfigError, match=r"backoff_initial .* is below min_request_interval"):
+        load_config(env={}, cwd=tmp_path, home=tmp_path)
+
+
+def test_the_default_backoff_follows_a_raised_floor(tmp_path: Path) -> None:
+    # Only the default accommodates: a file that raises the interval and names no backoff
+    # still has one that means something.
+    write(tmp_path / "config.toml", VALID + "\n[source]\nmin_request_interval = 30.0\n")
+    assert load_config(env={}, cwd=tmp_path, home=tmp_path).backoff_initial == 30.0
 
 
 def test_the_archive_modes_are_declared_even_when_the_file_omits_them(tmp_path: Path) -> None:

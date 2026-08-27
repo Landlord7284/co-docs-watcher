@@ -18,7 +18,6 @@ from co_docs_watcher.models import (
     SourceStatus,
 )
 from co_docs_watcher.rad import RadSource
-from co_docs_watcher.rad.client import RawDownload
 from co_docs_watcher.rad.download import fetch
 from co_docs_watcher.source import Source
 
@@ -48,11 +47,11 @@ def envelope(extension: str = ".pdf") -> bytes:
 
 
 class FakeClient:
-    def __init__(self, content: bytes, content_disposition: str = "") -> None:
-        self.answer = RawDownload(content=content, content_disposition=content_disposition)
+    def __init__(self, content: bytes) -> None:
+        self.answer = content
         self.calls: list[tuple[int, int, str]] = []
 
-    def fetch_document(self, document_id: int, version: int, protocol: str) -> RawDownload:
+    def fetch_document(self, document_id: int, version: int, protocol: str) -> bytes:
         self.calls.append((document_id, version, protocol))
         return self.answer
 
@@ -85,6 +84,49 @@ def build_zip(*members: tuple[str, bytes]) -> bytes:
     return buffer.getvalue()
 
 
+def build_deflated_zip(*members: tuple[str, bytes]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, content in members:
+            archive.writestr(name, content)
+    return buffer.getvalue()
+
+
+def break_crc(container: bytes, original: bytes, replacement: bytes) -> bytes:
+    """Rewrite a stored member's bytes in place, leaving every offset and the CRC behind.
+
+    The container opens cleanly and the central directory is intact: the damage surfaces
+    only when the member itself is read, which is the whole point of these cases.
+    """
+    assert len(original) == len(replacement)
+    return container.replace(original, replacement)
+
+
+def break_compressed_stream(container: bytes) -> bytes:
+    """Damage the deflate stream of the first member, past its local header."""
+    out = bytearray(container)
+    with zipfile.ZipFile(io.BytesIO(container)) as archive:
+        start = archive.infolist()[0].header_offset
+    name_length = int.from_bytes(out[start + 26 : start + 28], "little")
+    extra_length = int.from_bytes(out[start + 28 : start + 30], "little")
+    at = start + 30 + name_length + extra_length
+    out[at + 5] ^= 0xFF
+    out[at + 9] ^= 0xFF
+    return bytes(out)
+
+
+def mark_encrypted(container: bytes) -> bytes:
+    """Set the encryption bit of the first member, in both headers that carry it.
+
+    ``zipfile`` cannot write an encrypted member, and ``flag_bits`` set on a ``ZipInfo`` is
+    overwritten on the way out — so the bit is set on the bytes themselves.
+    """
+    out = bytearray(container)
+    for signature, offset in ((b"PK\x03\x04", 6), (b"PK\x01\x02", 8)):
+        out[out.find(signature) + offset] |= 0x01
+    return bytes(out)
+
+
 def staged(tmp_path: Path) -> Path:
     return tmp_path / "staging"
 
@@ -93,7 +135,7 @@ def staged(tmp_path: Path) -> Path:
 
 
 def test_a_pdf_is_recognized_by_its_signature_and_delivered_stable(tmp_path: Path) -> None:
-    client = FakeClient(PDF, content_disposition="attachment; filename=009512000101011.pdf")
+    client = FakeClient(PDF)
 
     delivery = fetch(client, document(), staged(tmp_path))  # type: ignore[arg-type]
 
@@ -129,6 +171,17 @@ def test_an_html_body_is_rejected_even_when_well_formed(tmp_path: Path, body: by
         fetch(client, document(), staged(tmp_path))  # type: ignore[arg-type]
 
     assert list(staged(tmp_path).iterdir()) == []
+
+
+def test_a_binary_that_merely_contains_html_is_divergence_and_not_an_outage(
+    tmp_path: Path,
+) -> None:
+    # A format this build cannot store needs a person to look at it. Reading it as the
+    # source's error page would answer that with a backoff and three retries, and bury it.
+    client = FakeClient(b"\x00\x01\x02RIFF....<html lang='x'> inside a binary header")
+
+    with pytest.raises(SourceContractError, match="signature"):
+        fetch(client, document(), staged(tmp_path))  # type: ignore[arg-type]
 
 
 def test_an_unknown_signature_is_contract_divergence(tmp_path: Path) -> None:
@@ -206,6 +259,24 @@ def test_an_implausible_declared_extension_leaves_the_container_whole(
     assert all(file.role is FileRole.MEMBER for file in delivery.files)
 
 
+def test_an_ipe_attachment_that_is_itself_a_container_is_archived_whole(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Reducing it would file a container as the delivery's one document, with none of the
+    # checks a container gets. The nesting stays visible instead, and is said out loud.
+    nested = build_zip(("dentro.pdf", PDF))
+    client = FakeClient(build_zip((IPE_ENVELOPE, envelope(".zip")), (IPE_ATTACHMENT, nested)))
+
+    with caplog.at_level(logging.WARNING):
+        delivery = fetch(client, document(), staged(tmp_path))  # type: ignore[arg-type]
+
+    assert sorted(file.path.name for file in delivery.files) == sorted(
+        [IPE_ENVELOPE, IPE_ATTACHMENT]
+    )
+    assert (staged(tmp_path) / IPE_ATTACHMENT).read_bytes() == nested
+    assert "is itself a container" in caplog.text
+
+
 def test_an_envelope_with_several_attachments_is_archived_whole(tmp_path: Path) -> None:
     """An unmeasured shape is kept, not guessed at: discarding the envelope is irreversible."""
     client = FakeClient(
@@ -280,6 +351,48 @@ def test_members_over_the_inflation_cap_are_rejected(tmp_path: Path) -> None:
         fetch(client, document(), staged(tmp_path), max_extracted_bytes=100)  # type: ignore[arg-type]
 
 
+# --- Members that cannot be read. ---
+#
+# The container opens and the member does not. Whatever ``zipfile`` raises at that point
+# descends from nothing the pipeline catches, so an unnamed failure here does not cost one
+# document — it costs the run, and the steps that had not happened yet with it.
+
+
+def test_a_member_with_a_broken_crc_is_transient(tmp_path: Path) -> None:
+    client = FakeClient(
+        break_crc(build_zip((SPREADSHEET, b"payload")), b"payload", b"PAYLOAD")
+    )
+
+    with pytest.raises(TransientSourceError, match="could not be read"):
+        fetch(client, document(), staged(tmp_path))  # type: ignore[arg-type]
+
+
+def test_a_member_whose_compressed_stream_is_corrupt_is_transient(tmp_path: Path) -> None:
+    # A different exception entirely — ``zlib`` raises this one, not ``zipfile`` — and the
+    # same news: the bytes arrived damaged and a later attempt may not.
+    client = FakeClient(break_compressed_stream(build_deflated_zip((SPREADSHEET, b"x" * 4096))))
+
+    with pytest.raises(TransientSourceError, match="could not be read"):
+        fetch(client, document(), staged(tmp_path))  # type: ignore[arg-type]
+
+
+def test_an_encrypted_member_costs_the_document_and_not_the_run(tmp_path: Path) -> None:
+    # Not transient: a member this build has no key for will not open on the next attempt
+    # either. It is still one document's failure, recorded against its retry budget.
+    client = FakeClient(mark_encrypted(build_zip((SPREADSHEET, b"payload"))))
+
+    with pytest.raises(DocumentError, match="could not be extracted"):
+        fetch(client, document(), staged(tmp_path))  # type: ignore[arg-type]
+
+
+def test_an_ipe_attachment_that_cannot_be_read_is_transient(tmp_path: Path) -> None:
+    container = build_zip((IPE_ENVELOPE, envelope()), (IPE_ATTACHMENT, b"%PDF-payload"))
+    client = FakeClient(break_crc(container, b"%PDF-payload", b"%PDF-PAYLOAD"))
+
+    with pytest.raises(TransientSourceError, match="could not be read"):
+        fetch(client, document(), staged(tmp_path))  # type: ignore[arg-type]
+
+
 # --- XML members. ---
 
 
@@ -296,6 +409,18 @@ def test_a_malformed_xml_member_is_rejected(tmp_path: Path) -> None:
     client = FakeClient(build_zip(("FormularioCadastral.xml", b"<<<not xml")))
 
     with pytest.raises(DocumentError, match="not well-formed"):
+        fetch(client, document(), staged(tmp_path))  # type: ignore[arg-type]
+
+
+def test_an_xml_member_that_breaks_mid_read_is_transient_and_not_malformed(
+    tmp_path: Path,
+) -> None:
+    # The bytes parse; the member's CRC is what fails, and only once the walk reaches the
+    # end of it. Reported for what it is: damage in transit, not a malformed filing.
+    container = build_zip((STABLE_XML, b"<Documento><Nome>ACME</Nome></Documento>"))
+    client = FakeClient(break_crc(container, b"ACME", b"acme"))
+
+    with pytest.raises(TransientSourceError, match="could not be read"):
         fetch(client, document(), staged(tmp_path))  # type: ignore[arg-type]
 
 
@@ -331,7 +456,7 @@ def test_a_member_broken_under_every_encoding_still_reports_the_declared_one(
 
 
 def test_an_ipe_envelope_that_lies_about_its_encoding_still_gives_up_its_extension(
-    tmp_path: Path,
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     lying = (
         "<?xml version='1.0' encoding='utf-8'?><Documento>"
@@ -341,9 +466,14 @@ def test_an_ipe_envelope_that_lies_about_its_encoding_still_gives_up_its_extensi
     # A body no signature recognizes, so the envelope's declaration is the only hint left.
     client = FakeClient(build_zip((IPE_ENVELOPE, lying), (IPE_ATTACHMENT, b"opaque bytes")))
 
-    delivery = fetch(client, document(), staged(tmp_path))  # type: ignore[arg-type]
+    with caplog.at_level(logging.WARNING):
+        delivery = fetch(client, document(), staged(tmp_path))  # type: ignore[arg-type]
 
     assert [file.path.name for file in delivery.files] == ["document.pdf"]
+    # The envelope is walked twice — once to validate it, once to read the declaration —
+    # and a member mis-declared once is worth saying once.
+    mentions = [line for line in caplog.messages if "declares an encoding" in line]
+    assert len(mentions) == 1
 
 
 def test_an_xml_member_with_undefined_entities_is_rejected_not_resolved(tmp_path: Path) -> None:

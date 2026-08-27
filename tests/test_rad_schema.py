@@ -102,6 +102,42 @@ def test_a_subject_containing_the_row_separator_aborts_the_collection() -> None:
         parse_listing(rad.payload(rad.row(subject="a $&&* b")))
 
 
+# --- Prose fields. ---
+
+
+@pytest.mark.parametrize("field", ["legal_name", "category", "doc_type", "subject"])
+@pytest.mark.parametrize(
+    "marker",
+    ["<spanOrder>20260821</spanOrder> 21/08/2026", "onclick=OpenDownloadDocumentos(1,1,'p','')"],
+)
+def test_a_structured_marker_where_prose_belongs_aborts(field: str, marker: str) -> None:
+    # Twelve fields, eight of them still valid, and one column carrying something that is
+    # not prose at all: the shape the count alone cannot see.
+    with pytest.raises(SourceContractError, match="columns have moved"):
+        parse_row(rad.row(**{field: marker}))
+
+
+@pytest.mark.parametrize(
+    "subject",
+    [
+        "Resultado < 2026 e a diferença > 3%",
+        "Aquisição da Alfa & Beta S.A.",
+        "Esclarecimentos sobre <consulta> da B3",
+    ],
+)
+def test_prose_that_merely_looks_like_markup_is_still_prose(subject: str) -> None:
+    # The check names two markers and nothing else: a company writing an angle bracket in a
+    # subject must not cost the whole day's collection.
+    assert parse_row(rad.row(subject=subject)).subject == subject
+
+
+def test_the_placeholder_is_absence_for_the_type_and_a_value_for_the_subject() -> None:
+    # ``-`` is how the page spells a missing type or species (measured 2026-08-24); it is
+    # not how a company spells a subject, so it is not read as silence there.
+    assert parse_row(rad.row(doc_type=" - ")).doc_type == ""
+    assert parse_row(rad.row(subject="-")).subject == "-"
+
+
 # --- Sort keys. ---
 
 

@@ -78,6 +78,12 @@ max_age_days = 7               # days a cached FCA package is used without re-do
 timezone = "America/Sao_Paulo" # anchors dates, directory names, log timestamps
 min_request_interval = 15.0    # seconds between requests; the backend is fragile
 max_requests_per_run = 200     # safety fuse for a single run
+max_listing_bytes = 67108864   # cap on one listing answer, read as it streams in
+max_download_bytes = 268435456 # cap on one download, read as it streams in
+max_extracted_bytes = 1073741824  # cap on what one container may inflate to
+retries = 3                    # attempts after a transient failure
+backoff_initial = 15.0         # first wait between attempts; never below min_request_interval
+backoff_factor = 4.0           # the wait is multiplied by this each attempt
 base_url = "https://www.rad.cvm.gov.br/ENETWeb/"  # override only for a test server or mirror
 
 [prefix_overrides]

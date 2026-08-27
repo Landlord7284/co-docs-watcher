@@ -141,6 +141,22 @@ def test_a_transient_failure_is_retried_until_the_source_recovers() -> None:
     assert client.requests_made == 2
 
 
+def test_no_retries_means_one_attempt_and_a_negative_count_is_refused() -> None:
+    down = rad.envelope(tem_erro=True, msg_erro="down")
+    handler, seen = answering(httpx.Response(200, json=down))
+    client, clock = make_client(handler, retries=0)
+
+    with pytest.raises(TransientSourceError):
+        client.list_documents(DAY)
+
+    assert len(seen) == 1
+    assert clock.sleeps == []
+    # Every other number here degrades into something with a meaning; this one degrades into
+    # no attempt at all, so it is refused where it is written rather than where it lands.
+    with pytest.raises(ValueError, match="retries cannot be negative"):
+        make_client(handler, retries=-1)
+
+
 def test_a_captcha_demand_short_circuits_with_no_retry_and_no_backoff() -> None:
     handler, seen = answering(httpx.Response(200, json=rad.envelope(captcha="S")))
     client, clock = make_client(handler)
@@ -160,6 +176,28 @@ def test_the_captcha_wins_over_tem_erro_when_both_arrive() -> None:
 
     with pytest.raises(CaptchaRequiredError):
         client.list_documents(DAY)
+
+
+@pytest.mark.parametrize("answer", ["s", "Y", "", True, 1, ["S"]])
+def test_a_captcha_answer_outside_the_vocabulary_is_contract_divergence(answer: object) -> None:
+    # The one signal whose wrong reaction is to carry on requesting: an unrecognized
+    # spelling must be loud, never read as "no captcha was demanded".
+    envelope = rad.envelope("linha$&&*")
+    envelope["d"]["SolicitarCaptcha"] = answer
+    handler, seen = answering(httpx.Response(200, json=envelope))
+    client, _ = make_client(handler)
+
+    with pytest.raises(SourceContractError, match="SolicitarCaptcha"):
+        client.list_documents(DAY)
+
+    assert len(seen) == 1
+
+
+def test_the_negative_answer_is_a_listing_like_any_other() -> None:
+    handler, _ = answering(httpx.Response(200, json=rad.envelope("linha$&&*", captcha="N")))
+    client, _ = make_client(handler)
+
+    assert client.list_documents(DAY) == "linha$&&*"
 
 
 @pytest.mark.parametrize(
@@ -286,10 +324,10 @@ def test_the_download_get_carries_the_persisted_arguments_and_an_empty_desc_tipo
     )
     client, _ = make_client(handler)
 
-    raw = client.fetch_document(160125, 7, "009512FRE202620260700160125-70")
+    content = client.fetch_document(160125, 7, "009512FRE202620260700160125-70")
 
-    assert raw.content == b"%PDF-1.6 ..."
-    assert raw.content_disposition == "attachment; filename=009512000101011.pdf"
+    # The body, and only the body: the headers the answer came with do not travel with it.
+    assert content == b"%PDF-1.6 ..."
     request = seen[0]
     assert request.url.path.endswith("frmDownloadDocumento.aspx")
     assert dict(request.url.params) == {
@@ -318,7 +356,7 @@ def test_a_download_5xx_is_retried_like_any_transient_failure() -> None:
 
     client, _ = make_client(handler)
 
-    assert client.fetch_document(160125, 7, "protocol").content == b"%PDF-1.6"
+    assert client.fetch_document(160125, 7, "protocol") == b"%PDF-1.6"
 
 
 # --- Contract: a recorded envelope round-trips into documents. ---
