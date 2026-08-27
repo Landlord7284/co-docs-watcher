@@ -113,9 +113,15 @@ in use, the roots (created if missing, probed for writability), `source.timezone
 zone the process itself is running in — which is how the container's derived `TZ` is checked
 without exec'ing into it — both resolved discovery windows, first date, last date, day count,
 and which of `run` and `run --monitor` sweeps each, so the configuration is verifiable
-without spending a sweep on it, the watch list, the registry cache age, and the source (one
-real listing request for today). Exits `0` when everything passed, `1` when something failed,
-`4` when the source demanded a captcha.
+without spending a sweep on it, the watch list, the registry cache age, the watch list
+compared against the cached registry, and the source (one real listing request for today).
+Exits `0` when everything passed, `1` when something failed, `4` when the source demanded a
+captcha.
+
+The watch-list comparison reads the cache without touching the network and reports any
+company whose stored entry differs from the registry — a rename, a new trading code —
+naming both sides and what the next run will do. Drift is a finding, never a failure: the
+next run settles it by itself.
 
 ### `add QUERY` / `add --ticker T | --cvm-code C | --cnpj N | --name TEXT`
 
@@ -166,9 +172,14 @@ match stage, legal name — without writing anything.
 ### `run [--monitor]`
 
 One complete pass: lock, reconcile what an interrupted run left, refresh the FCA cache if
-stale, sweep every day of the discovery window, enact supersessions and cancellations,
-download the queue, purge what aged out of the retention window, and regenerate the inbox
-index of every day in it. Progress goes to stdout, warnings and errors to stderr.
+stale and settle the watch list against it, sweep every day of the discovery window, enact
+supersessions and cancellations, download the queue, purge what aged out of the retention
+window, and regenerate the inbox index of every day in it. Progress goes to stdout,
+warnings and errors to stderr.
+
+A company that changes its trading code or its legal name follows automatically: the entry
+is re-derived from the refreshed registry, so neither `rm` nor `add` is needed. Folders
+already on disk are never renamed, and a prefix set in `[prefix_overrides]` stays.
 
 `--monitor` sweeps `discovery.monitor_days` instead of `discovery.days` and changes
 nothing else — purge, inbox, and the registry refresh are identical between the profiles.
@@ -246,11 +257,14 @@ A document is retried for three failed attempts, one per run, and then stays `fa
 
 ## The watch list
 
-`data_root/companies.yaml` is yours. The watcher appends entries (`add`) and removes them
-(`rm`), and never reorders the file; comments and formatting survive its rewrites. An edit
-you make while the watcher is writing wins — the watcher abandons its own write rather
-than overwrite yours. Editing entries by hand is fine; an entry that fails to parse aborts
-the load rather than being silently skipped. `cvm_code` is a CVM code (`009512`, or `00951-2` the way
+`data_root/companies.yaml` is yours. The watcher appends entries (`add`), removes them
+(`rm`), re-derives `prefix` and `legal_name` from the registry on every run, and never
+reorders the file; comments and formatting survive its rewrites. An edit you make while
+the watcher is writing wins — the watcher abandons its own write rather than overwrite
+yours. Editing entries by hand is fine, but a re-derived field lasts only until the
+registry disagrees: a folder name that must not follow the ticker belongs in
+`[prefix_overrides]`. An entry that fails to parse aborts the load rather than being
+silently skipped. `cvm_code` is a CVM code (`009512`, or `00951-2` the way
 the source prints it) and `prefix` is a folder name — letters, digits and hyphens, at
 most 24 characters. Neither is repaired for you: a code distilled out of something else
 would monitor another company, and a prefix that is a path would file documents outside

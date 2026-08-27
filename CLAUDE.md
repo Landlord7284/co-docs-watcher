@@ -156,7 +156,7 @@ src/co_docs_watcher/
 
 1. **lock** — `flock` on `data_root`.
 2. **reconcile** — intermediate states left by an interrupted run.
-3. **registry** — refresh the FCA if stale. Failure here blocks new registrations, never monitoring.
+3. **registry** — refresh the FCA if stale, and settle the watch list against what was just refreshed: `prefix`, `prefix_source` and `legal_name` follow the registry, keyed on the CVM code a rename does not touch. Failure here blocks new registrations, never monitoring — no usable registry means no settling and a run that monitors what the file already says.
 4. **discover** — one sweep per day of the discovery window, **most recent day first**, filtered locally against the watched CVM codes; `Ativo` goes to the queue, `Inativo`/`Cancelado` reconcile what is already on disk: the sweep flags the state and the enactment — the same one step 2 performs — runs immediately after it, so a cancellation observed today takes the file with it today.
 5. **fetch** — download to `.tmp/`, validate, extract if ZIP, atomic `rename`. The queue drains **most recent delivery date first**, publication order kept within a day.
 6. **purge** — whatever aged out of the window.
@@ -216,7 +216,7 @@ Group 1 is the root and is **lazy**: it stops at the root and hands every class 
 
 Fallback chain: **1)** validated ticker root (`PETR`) → **2)** reduced, sanitized legal name (`PLASCAR-PARTICIPACOES`) → **3)** zero-padded CVM code (`009512`).
 
-The folder name is a **snapshot, not identity**: a folder once created is never renamed. Identity lives in the manifest and in `(id, version)` inside the file name. If a company lists on the exchange after monitoring began, older days stay under the old name — that is correct, not a bug.
+The folder name is a **snapshot of what the company is called now, not identity**: the entry is re-derived from the registry on every run, and a directory already written is never renamed. Identity lives in the manifest and in `(id, version)` inside the file name. Days published before a rename keep the old folder until the retention frontier reaches them, and one day may hold both folders when the prefix moves between two runs of the same day — that is correct, not a bug.
 
 Registry search resolves **ticker → CNPJ → CD_CVM**, with fallback to a numeric CVM code and to a normalized substring of `Nome_Empresarial` **and** `Nome_Empresarial_Anterior` — the previous legal name matters more than it seems: 495 of the 675 companies in the 2026 FCA have one (2026-08-24).
 
@@ -228,22 +228,23 @@ The FCA (*Formulário Cadastral*) is the annual registration form, published as 
 - **Two years are always read**, the previous one as the base and the current one on top. The yearly package holds only companies that filed *that* year, so in February the current year alone would be a registry of a few dozen companies. A year not published yet (every January) is expected, not a failure.
 - **The latest version per company is re-derived** from `(Versao, ID_Documento)`, and trading codes are joined on the selected version's `ID_Documento`. The published general member already arrives reduced to one row per company — a promise nobody made, so it is not relied on.
 - **Only codes with an empty `Data_Fim_Negociacao` are active** (55 of 963 rows carried an end date on 2026-08-24). `Codigo_Negociacao` is free text: it arrives in lower case (`tgma3`), as junk (`B3`, `NÃO HÁ`, bare numbers), or empty for debentures and commercial notes.
+- **A trading code a company stops using disappears** from the newer yearly package, with no `Data_Fim_Negociacao` to mark it (measured 2026-08-27 against the 2025 and 2026 packages, on the Odontoprev → Bradsaúde rename): the registry carries a previous legal name and never a previous trading code. `Data_Fim_Negociacao` marks a code that ended inside a filed version, which is a different thing.
 - **The cache is under `data_root/cvm-cache/`**, one file per year, refreshed only when older than `registry.max_age_days`. A download that fails, arrives corrupt, or exceeds the size cap **never replaces the cached snapshot**: the previous one stays and the run continues on it, loudly. Only the absence of any usable snapshot raises — and that blocks `add`, never `run`.
 
 ### The watch list
 
-`data_root/companies.yaml` is a file the operator owns; the watcher appends to it and removes from it, and never reorganizes it. One key, `companies`, holding one entry per company:
+`data_root/companies.yaml` is a file the operator owns; the watcher appends to it, removes from it, and re-derives `prefix`, `prefix_source` and `legal_name` from the registry on every run — `matched_by` records how the company was *found* and is never re-derived — and it never reorganizes the file. One key, `companies`, holding one entry per company:
 
 ```yaml
 companies:
   - cvm_code: '009512'      # what the sweep is filtered against
-    prefix: PETR            # the folder name — a snapshot, never renamed
+    prefix: PETR            # the folder name — follows the registry; folders on disk never move
     prefix_source: ticker   # override | ticker | legal_name | cvm_code
     matched_by: ticker      # ticker | cnpj | cvm_code | legal_name | previous_legal_name
     legal_name: PETROLEO BRASILEIRO S.A. PETROBRAS
 ```
 
-`prefix_source` and `matched_by` are recorded because months later "why is this folder called `009512`?" and "why is this company here at all?" must be answerable without re-running anything. Entries are **appended, never sorted** — the order of the file is the human's. An entry that fails to parse aborts the load instead of being skipped: an entry dropped in silence is a company that stops being monitored in silence. `cvm_code` and `prefix` are checked for their shape on every load and never repaired: a code is *read*, never distilled out of free text, because a value that merely contains digits reduces to a valid code for another company and the sweep would go on monitoring someone nobody asked for; and `prefix` satisfies the same `PREFIX_RULE` an entry in `[prefix_overrides]` is held to, because it is joined to `documents_root` to build the company's folder and it is the same operator naming the same folder. The regulator's own spelling of a code, `00951-2`, is a spelling and not a second code. `add` never chooses between candidates itself: with a terminal on both stdin and stdout it numbers them and asks which one, and an empty answer cancels without writing; with either stream redirected there is nobody to answer, so the query is refused and the candidates are handed back. The prompt lives in `cli.py` alone — the resolver takes a `Chooser` and nothing below the CLI ever reads from stdin.
+`prefix_source` and `matched_by` are recorded because months later "why is this folder called `009512`?" and "why is this company here at all?" must be answerable without re-running anything; `override` is where an operator's `[prefix_overrides]` value survives a ticker change. Entries are **appended, never sorted** — the order of the file is the human's. An entry that fails to parse aborts the load instead of being skipped: an entry dropped in silence is a company that stops being monitored in silence. `cvm_code` and `prefix` are checked for their shape on every load and never repaired: a code is *read*, never distilled out of free text, because a value that merely contains digits reduces to a valid code for another company and the sweep would go on monitoring someone nobody asked for; and `prefix` satisfies the same `PREFIX_RULE` an entry in `[prefix_overrides]` is held to, because it is joined to `documents_root` to build the company's folder and it is the same operator naming the same folder. The regulator's own spelling of a code, `00951-2`, is a spelling and not a second code. `add` never chooses between candidates itself: with a terminal on both stdin and stdout it numbers them and asks which one, and an empty answer cancels without writing; with either stream redirected there is nobody to answer, so the query is refused and the candidates are handed back. The prompt lives in `cli.py` alone — the resolver takes a `Chooser` and nothing below the CLI ever reads from stdin.
 
 ## Document identity and states
 
