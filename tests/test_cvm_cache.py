@@ -183,3 +183,63 @@ def test_the_offline_path_uses_whatever_is_cached(tmp_path: Path) -> None:
 
     assert asked == []
     assert registry.by_cnpj(fca.PETROBRAS) is not None
+
+
+def test_an_unwritable_cache_costs_the_cache_and_never_the_run(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # A read-only ``data_root`` is a plausible mount, and the download itself was fine: the
+    # run uses what it fetched, and the failure arrives as a warning rather than as an
+    # OSError the CLI has no exit code for.
+    client, _ = serving(y2025=fca.build_package(year=2025), y2026=fca.build_package())
+    root = tmp_path / "read-only"
+    root.mkdir()
+    os.chmod(root, 0o500)
+    store = RegistryCache(root / "cvm-cache", url_template=URL, client=client)
+
+    try:
+        with caplog.at_level(logging.WARNING):
+            registry = store.load(now=NOW)
+    finally:
+        os.chmod(root, 0o700)
+
+    assert "could not be cached" in caplog.text
+    assert registry.by_cnpj(fca.PETROBRAS) is not None
+    assert not store.path_for(2026).exists()
+
+
+def test_a_corrupt_cached_year_does_not_take_the_other_one_down(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Two years are read and only one is damaged: a pair that fails together over a single
+    # unreadable file reads as "the registry is gone" when half of it is intact.
+    client, _ = serving(y2025=fca.build_package(year=2025), y2026=fca.build_package())
+    store = cache(tmp_path, client)
+    store.load(now=NOW)
+    store.path_for(2025).write_bytes(b"PK\x03\x04 and then nothing a reader can use")
+
+    with caplog.at_level(logging.WARNING):
+        registry = store.load(now=NOW, refresh=False)
+
+    assert "is unusable" in caplog.text
+    assert registry.by_cnpj(fca.PETROBRAS) is not None
+
+
+def test_a_cached_package_that_cannot_be_read_is_reported(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Unreadable is not the same as absent, and the difference is the whole diagnosis: the
+    # bare "no usable FCA package" names the wrong cause for a permission problem.
+    client, _ = serving(y2025=fca.build_package(year=2025), y2026=fca.build_package())
+    store = cache(tmp_path, client)
+    store.load(now=NOW)
+    os.chmod(store.path_for(2026), 0o000)
+
+    try:
+        with caplog.at_level(logging.WARNING):
+            registry = store.load(now=NOW, refresh=False)
+    finally:
+        os.chmod(store.path_for(2026), 0o600)
+
+    assert "could not be read" in caplog.text
+    assert registry.by_cnpj(fca.PETROBRAS) is not None

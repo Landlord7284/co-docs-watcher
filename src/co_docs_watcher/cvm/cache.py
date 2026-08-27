@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import datetime
 from pathlib import Path
 
@@ -88,7 +88,12 @@ class RegistryCache:
         path = self.path_for(year)
         try:
             modified = path.stat().st_mtime
-        except OSError:
+        except FileNotFoundError:
+            return False
+        except OSError as exc:
+            # Not the same thing as an absent cache, and worth saying so: the answer is the
+            # same "refresh it", but the reason is a cache directory that cannot be read.
+            logger.warning("registry: the cached package at %s could not be stat'd (%s)", path, exc)
             return False
         age = now.timestamp() - modified
         return age <= self._max_age_days * 86_400
@@ -100,32 +105,39 @@ class RegistryCache:
         absence of any cached package raises.
         """
         years = (now.year - 1, now.year)
-        registries = []
-        for year in years:
-            payload = self._package(year, now=now, refresh=refresh)
-            if payload is not None:
-                registries.append(parse_package(payload))
-        if not registries or not any(len(registry) for registry in registries):
+        registries = [
+            registry
+            for registry in (
+                self._registry(year, now=now, refresh=refresh) for year in years
+            )
+            if registry is not None
+        ]
+        if not any(len(registry) for registry in registries):
             raise RegistryError(
                 f"no usable FCA package for {years[0]} or {years[1]} in {self._root}; "
                 "registering new companies needs one, monitoring does not"
             )
         return merge_registries(*registries)
 
-    def _package(self, year: int, *, now: datetime, refresh: bool) -> bytes | None:
-        """The bytes for one year: cached when current, downloaded when not, ``None`` when
-        neither is possible."""
+    def _registry(self, year: int, *, now: datetime, refresh: bool) -> Registry | None:
+        """One year's registry: cached when current, downloaded when not, ``None`` when
+        neither is possible.
+
+        A year is parsed exactly once, here, and what travels no further than this method is
+        the payload — which is what lets a package that fails to parse be dropped on its own
+        rather than taking the other year down with it.
+        """
         path = self.path_for(year)
         if not refresh or self.is_fresh(year, now=now):
-            return self._cached(path)
+            return self._cached_registry(path, year)
         try:
             payload = self._download(year)
-            self._store(path, payload)
+            registry = parse_package(payload)
         except RegistryNotPublishedError:
             logger.warning(
                 "registry: the %s package is not published yet; continuing without it", year
             )
-            return self._cached(path)
+            return self._cached_registry(path, year)
         except RegistryError as exc:
             logger.warning(
                 "registry: could not refresh the %s package (%s); falling back to whatever is "
@@ -134,13 +146,47 @@ class RegistryCache:
                 exc,
                 self._root,
             )
-            return self._cached(path)
-        return payload
+            return self._cached_registry(path, year)
+        try:
+            self._store(path, payload)
+        except RegistryError as exc:
+            logger.warning(
+                "registry: the %s package was downloaded but could not be cached (%s); this "
+                "run uses it, and the next one downloads it again",
+                year,
+                exc,
+            )
+        return registry
+
+    def _cached_registry(self, path: Path, year: int) -> Registry | None:
+        """The cached year, parsed, or ``None`` with a reason on the log.
+
+        A cached package that no longer parses is treated exactly like one that was never
+        there: it is one year of two, and the other one may well be intact. What must not
+        happen is the pair failing together over a single corrupt file — that reads as "the
+        registry is gone" when half of it is fine.
+        """
+        payload = self._cached(path)
+        if payload is None:
+            return None
+        try:
+            return parse_package(payload)
+        except RegistryError as exc:
+            logger.warning(
+                "registry: the cached %s package at %s is unusable (%s); continuing without it",
+                year,
+                path,
+                exc,
+            )
+            return None
 
     def _cached(self, path: Path) -> bytes | None:
         try:
             return path.read_bytes()
-        except OSError:
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            logger.warning("registry: the cached package at %s could not be read (%s)", path, exc)
             return None
 
     def _download(self, year: int) -> bytes:
@@ -169,17 +215,30 @@ class RegistryCache:
         return b"".join(chunks)
 
     def _store(self, path: Path, payload: bytes) -> None:
-        """Write the package only after it parses.
+        """Place an already-parsed package in the cache.
 
-        The order is the whole point: a truncated or corrupt download that overwrote the cache
-        would leave the watcher with no registry at all until the next successful refresh, and
-        the failure would surface as "company not found" rather than as a download problem.
+        Validation happens in the caller, before anything is written: a truncated or corrupt
+        download that overwrote the cache would leave the watcher with no registry at all
+        until the next successful refresh, and the failure would surface as "company not
+        found" rather than as a download problem.
+
+        A cache that cannot be written is a ``RegistryError`` and not a bare ``OSError``. The
+        distinction is the whole error contract of this package: ``RegistryError`` is the one
+        the caller knows how to continue past, while an ``OSError`` escaping here would leave
+        the CLI with an exception it does not map to any documented exit code — over a
+        directory being read-only, which is a plausible way to mount ``data_root``.
         """
-        parse_package(payload)
-        self._root.mkdir(parents=True, exist_ok=True)
         staging = path.with_name(path.name + ".part")
-        staging.write_bytes(payload)
-        os.replace(staging, path)
+        try:
+            self._root.mkdir(parents=True, exist_ok=True)
+            staging.write_bytes(payload)
+            os.replace(staging, path)
+        except OSError as exc:
+            with suppress(OSError):
+                staging.unlink(missing_ok=True)
+            raise RegistryError(
+                f"the registry cache in {self._root} is not writable: {exc}"
+            ) from exc
 
     @contextmanager
     def _open_client(self) -> Iterator[httpx.Client]:
