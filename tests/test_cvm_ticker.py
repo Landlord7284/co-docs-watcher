@@ -36,9 +36,15 @@ def record(**overrides: object) -> RegistryRecord:
         ("POMO4", "POMO"),
         ("EQMA3B", "EQMA"),
         ("B3SA3", "B3SA"),
-        # Greedy on purpose: the unit's root is not the share's, and the tie-break below is
-        # what turns the pair back into one company.
-        ("ENGI11", "ENGI1"),
+        # A two-digit class belongs to the class, not to the root. All five of these are
+        # companies the rule got wrong while group 1 was greedy, measured 2026-08-26 on the
+        # real FCA: the root it kept was the one nobody calls the company.
+        ("ENGI11", "ENGI"),
+        ("KLBN11", "KLBN"),
+        ("ALUP11", "ALUP"),
+        ("BRBI11", "BRBI"),
+        ("GOLL54", "GOLL"),
+        ("INBR32", "INBR"),
         ("SC303", "SC30"),
         # Already a root: no class digit to strip.
         ("LMED", "LMED"),
@@ -76,13 +82,18 @@ def test_junk_in_the_free_text_field_is_not_a_ticker(junk: str) -> None:
     assert ticker_root(junk) is None
 
 
-def test_the_shorter_root_wins_a_receipt_pair() -> None:
+def test_every_class_of_one_company_reduces_to_the_same_root() -> None:
+    # Ordinary, preferred, unit, commercial note: one company, and the rule says so without
+    # the tie-break having to be consulted at all.
     assert choose_root(["ENGI3", "ENGI4", "ENGI11", "ENGI13"]) == "ENGI"
     assert choose_root(["SAPR11", "SAPR1", "SAPR3"]) == "SAPR"
+    assert choose_root(["KLBN3", "KLBN4", "KLBN11"]) == "KLBN"
 
 
-def test_equally_short_roots_break_alphabetically() -> None:
-    # Two ordinary-looking codes, no receipt to prefer: stability is what is left to want.
+def test_two_unrelated_codes_break_alphabetically() -> None:
+    # The only two companies carrying more than one root, measured 2026-08-26. The codes are
+    # unrelated to each other, so there is no right answer to find: stability is what is left
+    # to want, and ``[prefix_overrides]`` is where an operator disagrees.
     assert choose_root(["SCL04", "SC303"]) == "SC30"
     assert choose_root(["TXRX3", "TRXR4"]) == "TRXR"
 

@@ -197,10 +197,10 @@ The inbox index includes the subject (listing field 11). A cancelled document do
 Folders are named by the ticker root from the FCA registry, with fallbacks. The root rule:
 
 ```
-^([A-Z][A-Z0-9]{3,})(\d{1,2}[A-Z]?)$
+^([A-Z][A-Z0-9]{3,}?)(\d{1,2}[A-Z]?)$
 ```
 
-Group 1 is the root: `PETR4 → PETR`, `POMO3/POMO4 → POMO`, `EQMA3B → EQMA`, `B3SA3 → B3SA`. When a company has more than one root (typically subscription-receipt pairs like `ENGI`/`ENGI1`), **the shorter root wins**; remaining ties break alphabetically and can be overridden in `[prefix_overrides]`. Measured on the 2026 FCA (2026-08-24): 346 of 675 companies carry at least one valid root, 12 carry more than one, and after the tie-break there are **zero root collisions** between companies; `CNPJ → CD_CVM` is strictly 1:1 in both directions.
+Group 1 is the root and is **lazy**: it stops at the root and hands every class digit to group 2 — `PETR4 → PETR`, `POMO3/POMO4 → POMO`, `EQMA3B → EQMA`, `B3SA3 → B3SA`, `KLBN11 → KLBN`, `GOLL54 → GOLL`. A greedy group 1 would keep the first digit of a two-digit class and name a folder `KLBN1`, which is what nobody calls the company; 5 of the companies with a valid root list nothing but such a class (2026-08-26). When a company still carries more than one root the codes are simply unrelated — `SC303`/`SCL04` — so **the shorter root wins** as a first cut, remaining ties break alphabetically for stability rather than for correctness, and `[prefix_overrides]` is where an operator disagrees. Measured on the 2026 FCA (2026-08-26): 346 of 675 companies carry at least one valid root, 2 carry more than one, and after the tie-break there are **zero root collisions** between companies; `CNPJ → CD_CVM` is strictly 1:1 in both directions.
 
 `Codigo_Negociacao` is free text and must be distrusted: dozens of companies fill it with junk (`'NÃO HÁ'`, `'B3'`, bare numbers). The resolver **validates the root against the rule above** and falls back when it fails. Legitimate class-digit-less codes matching `^[A-Z]{4,5}$` (e.g. `LMED`, `TEGA`) already *are* the root and are accepted as such.
 

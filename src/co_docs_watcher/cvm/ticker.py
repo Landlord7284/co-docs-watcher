@@ -9,8 +9,8 @@ is not treated as one.
 
 The chain has three steps, and every step is worse than the one before it and better than
 having no folder: the validated root, the reduced legal name, the zero-padded CVM code. An
-operator who disagrees with the outcome overrides it in the configuration file — a company that
-trades under two equally short roots is a matter of taste, not of correctness.
+operator who disagrees with the outcome overrides it in the configuration file — a company
+trading under two unrelated codes has no right answer the rule could find.
 
 Everything here is pure. The folder name is a snapshot taken when a company is registered in
 the watch list; nothing in this module renames a folder that already exists.
@@ -40,8 +40,11 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 #: Group 1 is the root, group 2 the class digits: ``PETR4`` → ``PETR``, ``EQMA3B`` → ``EQMA``,
-#: ``ENGI11`` → ``ENGI``, ``B3SA3`` → ``B3SA``.
-TICKER_ROOT_RULE = re.compile(r"^([A-Z][A-Z0-9]{3,})(\d{1,2}[A-Z]?)$")
+#: ``B3SA3`` → ``B3SA``, ``KLBN11`` → ``KLBN``. Group 1 is lazy, so it stops at the root and
+#: hands every class digit to group 2. Greedy, it would keep the first of a two-digit class —
+#: ``KLBN11`` → ``KLBN1``, ``GOLL54`` → ``GOLL5`` — and name a folder after something no
+#: human calls the company: 5 of the 346 companies with a valid root, measured 2026-08-26.
+TICKER_ROOT_RULE = re.compile(r"^([A-Z][A-Z0-9]{3,}?)(\d{1,2}[A-Z]?)$")
 
 #: Codes with no class digit — ``LMED``, ``TEGA`` — already *are* the root.
 BARE_ROOT_RULE = re.compile(r"^[A-Z]{4,5}$")
@@ -87,11 +90,12 @@ def ticker_root(code: str) -> str | None:
 def choose_root(codes: Iterable[str]) -> str | None:
     """Pick one root out of a company's trading codes: **the shorter root wins**.
 
-    A company with more than one root is almost always a subscription-receipt pair —
-    ``ENGI``/``ENGI1``, ``SAPR``/``SAPR1`` — where the longer root is the receipt and the
-    shorter one is the company (12 of the 346 companies with a valid root, measured
-    2026-08-24). Remaining ties break alphabetically so the choice is at least stable across
-    runs; a company where that produces the wrong answer is what the override exists for.
+    Two roots for one company is rare and never means what it looks like: 2 of the 346
+    companies with a valid root carry more than one (measured 2026-08-26), and in both cases
+    the codes are simply unrelated to each other — ``SC303``/``SCL04``, ``TRXR3``/``TXRX4``.
+    So the shorter root is a first cut and the alphabetical tie-break is what actually
+    decides, chosen because it is stable across runs rather than because it is right. A
+    company where it lands on the wrong one is what ``[prefix_overrides]`` exists for.
     """
     roots = {root for root in map(ticker_root, codes) if root}
     if not roots:
