@@ -64,6 +64,8 @@ Subcommands: `doctor`, `add`, `list [QUERY]`, `rm QUERY`, `resolve`, `run [--mon
 
 Exit code `4` exists because `SolicitarCaptcha: "S"` is not a transient failure: retrying makes it worse.
 
+`run` ends by printing what it did as a table on stdout — one row per step, in the order the steps ran, sized to a single column. The shape does not vary with the outcome and every counter is printed whether or not it moved: a row that appears only when its counter is non-zero turns "nothing happened" into "nothing was printed", and to someone scanning a run those two read alike. A step the run never reached says `not reached` rather than reporting zeros nobody measured, and a run the source cut short says on its result row that the counters above it are partial. The table is CLI output like `doctor`'s findings and `status`'s report, never a log record: the log already carries each step's own line as it happened, and a second copy of the same counters under a timestamp would be one more pair of numbers to reconcile. What `fetch` weighs is read off the placed files rather than off the responses — a container is archived uncompressed, and a figure taken from the wire would describe something nobody can go and look at.
+
 Flag names are English, always. `--config` is valid before or after the subcommand. Any flag whose destination differs from its option string needs an explicit `metavar`, or `argparse` leaks the internal name into the help text.
 
 Config discovery chain, in order: `--config` → `$CO_WATCHER_CONFIG` → `./config.toml` → `./co-docs-watcher.toml` → `~/.config/co-docs-watcher/config.toml` → built-in defaults. Falling back to the defaults **logs a deliberate warning**: they point at `./var/…`, and a silent fallback means operating on a different archive than intended. `data_root`, `documents_root` and `logs_root` may be written relative, and are then resolved against the **directory of the configuration file**, never the working directory: a project-local installation is a checkout with a `config.toml` naming `var/data`, `var/documents` and `var/logs`, and it archives in the same place whether it is run by hand or from cron. Anchoring on the working directory would let one file mean a different archive per caller — the same silent-second-archive failure the built-in defaults warn about. Unknown sections and unknown keys are rejected rather than ignored: a typo that silently keeps a default is a configuration that lies. A path named by `--config` or `$CO_WATCHER_CONFIG` that does not exist refuses to start instead of falling through to the next candidate — both are explicit requests.
@@ -126,6 +128,7 @@ src/co_docs_watcher/
 ├── logging_setup.py  formatTime anchored on the source timezone, and the log file
 ├── models.py         the neutral core: SourceDocument, LocalState, Delivery
 ├── run.py            orchestration of one run
+├── summary.py        the run report, rendered as the table `run` prints when it ends
 ├── source.py         the Source protocol the pipeline depends on
 ├── text.py           identifier normalization and folder-safe names
 ├── cvm/              FCA registry: who the companies are, independently of what they publish

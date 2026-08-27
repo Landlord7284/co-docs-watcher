@@ -52,6 +52,7 @@ from co_docs_watcher.run import execute_run, probe_source
 from co_docs_watcher.scope.models import WatchedCompany
 from co_docs_watcher.scope.resolver import Chooser, describe, resolve
 from co_docs_watcher.scope.store import WatchList
+from co_docs_watcher.summary import summary_lines
 from co_docs_watcher.text import normalize_cvm_code, normalize_key
 
 __all__ = ["build_parser", "main"]
@@ -339,7 +340,16 @@ def _cmd_rm(config: Config, args: argparse.Namespace) -> ExitCode:
 
 
 def _cmd_run(config: Config, args: argparse.Namespace) -> ExitCode:
-    return execute_run(config, monitor=args.monitor).exit_code
+    """One pass, and then the run consolidated into a table on stdout.
+
+    The summary is printed for every run, scheduled ones included: it is the answer to "what
+    did this run do?", and a recap only a terminal gets is one the container's log would have
+    to be reconstructed from.
+    """
+    report = execute_run(config, monitor=args.monitor)
+    for line in summary_lines(report):
+        print(line)
+    return report.exit_code
 
 
 def _cmd_reconcile(config: Config, args: argparse.Namespace) -> ExitCode:

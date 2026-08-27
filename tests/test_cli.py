@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -25,6 +24,7 @@ from co_docs_watcher.manifest.db import open_manifest
 from co_docs_watcher.manifest.repo import AttemptOutcome, Manifest
 from tests.fca import build_package
 from tests.test_models import make_document
+from tests.test_summary import STEPS, make_report
 
 WATCH_LIST = """\
 companies:
@@ -111,12 +111,24 @@ def test_run_hands_the_profile_to_execute_run(
 
     def record(config: object, *, monitor: bool = False) -> object:
         profiles.append(monitor)
-        return SimpleNamespace(exit_code=ExitCode.CLEAN)
+        return make_report()
 
     monkeypatch.setattr(cli, "execute_run", record)
     assert cli.main(["--config", str(config_file), "run"]) == 0
     assert cli.main(["--config", str(config_file), "run", "--monitor"]) == 0
     assert profiles == [False, True]
+
+
+def test_run_ends_by_printing_the_consolidated_table(
+    config_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The recap is printed for every run, so a scheduled one leaves it in the log too."""
+    monkeypatch.setattr(cli, "execute_run", lambda config, *, monitor=False: make_report())
+
+    assert cli.main(["--config", str(config_file), "run"]) == 0
+
+    printed = capsys.readouterr().out.splitlines()
+    assert [line.split()[0] for line in printed[-len(STEPS) :]] == STEPS
 
 
 def test_the_query_is_one_thing_spelled_one_way() -> None:

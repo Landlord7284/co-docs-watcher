@@ -98,6 +98,34 @@ def test_the_pdf_is_hashed_once_and_marked_stable(manifest: Manifest, roots: Roo
     assert files[0].stable is True
 
 
+def test_what_the_run_reports_weighing_is_what_the_archive_holds(
+    manifest: Manifest, roots: Roots
+) -> None:
+    """A container is archived uncompressed, so the figure is read off the placed files."""
+    document = make_document(category=ITR)
+    queue(manifest, document)
+    source = FakeSource(recipes={document.identity: zip_delivery})
+
+    outcome = run(manifest, roots, source)
+
+    placed = [path for path in (roots.day(TODAY) / "PETR" / "ITR").iterdir() if path.is_file()]
+    assert outcome.archived_bytes == sum(path.stat().st_size for path in placed)
+    assert outcome.archived_bytes > 0
+
+
+def test_a_download_that_never_landed_weighs_nothing(
+    manifest: Manifest, roots: Roots
+) -> None:
+    document = make_document()
+    queue(manifest, document)
+    source = FakeSource(failures={document.identity: [DocumentError("truncated")]})
+
+    outcome = run(manifest, roots, source)
+
+    assert outcome.available == ()
+    assert outcome.archived_bytes == 0
+
+
 def test_an_unwrapped_ipe_delivery_lands_flat_like_any_other_filing(
     manifest: Manifest, roots: Roots
 ) -> None:

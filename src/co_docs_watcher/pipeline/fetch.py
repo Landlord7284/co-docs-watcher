@@ -89,11 +89,18 @@ _MAX_CONTAINER_NAMES = 50
 
 @dataclass(frozen=True, slots=True)
 class FetchOutcome:
-    """What one pass over the queue did."""
+    """What one pass over the queue did.
+
+    ``archived_bytes`` is what the successful downloads weigh on disk, members of a container
+    included. It is counted from the placed files and never off the wire: a container is
+    archived uncompressed, so a figure taken from the responses would describe something the
+    operator cannot go and look at.
+    """
 
     available: tuple[Identity, ...]
     retrying: tuple[Identity, ...]
     failed: tuple[Identity, ...]
+    archived_bytes: int = 0
 
     @property
     def attempted(self) -> int:
@@ -127,6 +134,7 @@ def fetch_pending(
     available: list[Identity] = []
     retrying: list[Identity] = []
     failed: list[Identity] = []
+    archived_bytes = 0
 
     for record in pending:
         document = record.document
@@ -149,6 +157,7 @@ def fetch_pending(
             )
             manifest.attempts.record(identity, AttemptOutcome.SUCCESS)
             available.append(identity)
+            archived_bytes += sum(file.size_bytes for file in files)
         except (CaptchaRequiredError, RequestBudgetExceededError):
             # The source refused the run, not this document. Put it back in the queue before
             # the run ends: charging its retry budget for an attempt that never reached it is
@@ -191,9 +200,13 @@ def fetch_pending(
             _discard(staging)
 
     logger.info(
-        "fetch: %d available, %d to retry, %d failed", len(available), len(retrying), len(failed)
+        "fetch: %d available, %d to retry, %d failed, %d byte(s) archived",
+        len(available),
+        len(retrying),
+        len(failed),
+        archived_bytes,
     )
-    return FetchOutcome(tuple(available), tuple(retrying), tuple(failed))
+    return FetchOutcome(tuple(available), tuple(retrying), tuple(failed), archived_bytes)
 
 
 def category_component(category: str) -> str:

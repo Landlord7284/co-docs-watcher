@@ -65,7 +65,13 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class RunReport:
-    """What one run did, step by step. The CLI turns it into an exit code and nothing else."""
+    """What one run did, step by step.
+
+    The CLI reads it twice and writes nothing back: once for the exit code, and once for the
+    table :mod:`co_docs_watcher.summary` renders out of it. Every step's outcome is kept whole
+    rather than reduced to a count here, because the two readers ask different questions of
+    the same run and neither of them is the one to decide what the other may still see.
+    """
 
     retention_window: RetentionWindow
     discovery_window: RetentionWindow
