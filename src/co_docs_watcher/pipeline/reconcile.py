@@ -33,7 +33,7 @@ from co_docs_watcher.manifest.repo import (
     Manifest,
 )
 from co_docs_watcher.models import LocalState
-from co_docs_watcher.pipeline.fetch import MAX_ATTEMPTS, archive_path_of, sha256_of
+from co_docs_watcher.pipeline.fetch import archive_path_of, sha256_of
 
 __all__ = ["EnactedFlags", "ReconcileOutcome", "enact_flags", "reconcile"]
 
@@ -69,7 +69,7 @@ def reconcile(
     *,
     documents_root: Path,
     staging_root: Path,
-    max_attempts: int = MAX_ATTEMPTS,
+    max_attempts: int,
 ) -> ReconcileOutcome:
     """Bring the archive and the manifest back into agreement."""
     recovered: list[Identity] = []
@@ -162,7 +162,7 @@ def _resolve_in_flight(
 
     removed = _remove_recorded_files(manifest, record, documents_root=documents_root)
     manifest.attempts.record(identity, AttemptOutcome.FAILURE, "interrupted while downloading")
-    exhausted = manifest.attempts.failures(identity) >= max_attempts
+    exhausted = manifest.attempts.lifetime_failures(identity) >= max_attempts
     target = LocalState.FAILED if exhausted else LocalState.DISCOVERED
     manifest.documents.transition(identity, target)
     logger.warning("document %s was interrupted while downloading; now %s", identity, target)

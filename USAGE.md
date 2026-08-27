@@ -84,6 +84,7 @@ max_extracted_bytes = 1073741824  # cap on what one container may inflate to
 retries = 3                    # attempts after a transient failure
 backoff_initial = 15.0         # first wait between attempts; never below min_request_interval
 backoff_factor = 4.0           # the wait is multiplied by this each attempt
+max_document_attempts = 3      # failed downloads one document gets, counted across runs
 base_url = "https://www.rad.cvm.gov.br/ENETWeb/"  # override only for a test server or mirror
 
 [prefix_overrides]
@@ -216,7 +217,11 @@ A document is retried for three failed attempts, one per run, and then stays `fa
 (`rm`), and never reorders the file; comments and formatting survive its rewrites. An edit
 you make while the watcher is writing wins — the watcher abandons its own write rather
 than overwrite yours. Editing entries by hand is fine; an entry that fails to parse aborts
-the load rather than being silently skipped.
+the load rather than being silently skipped. `cvm_code` is a CVM code (`009512`, or `00951-2` the way
+the source prints it) and `prefix` is a folder name — letters, digits and hyphens, at
+most 24 characters. Neither is repaired for you: a code distilled out of something else
+would monitor another company, and a prefix that is a path would file documents outside
+the archive.
 
 ## The archive
 

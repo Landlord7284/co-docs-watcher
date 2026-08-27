@@ -12,7 +12,7 @@ A failure in this file usually means the source moved, not that the code broke: 
 messages say so, and the fix is to update ``docs/fonte-rad.md`` with the newly observed
 behavior and its date — and then the code, if the divergence is real.
 
-Last full successful measurement: 2026-08-25.
+Last full successful measurement: 2026-08-27.
 """
 
 from __future__ import annotations
@@ -201,15 +201,15 @@ def test_a_structured_package_is_stable_except_the_generated_pdf(
     document = _pick(documents, structured=True)
     first = client.fetch_document(document.document_id, document.version, document.protocol)
     second = client.fetch_document(document.document_id, document.version, document.protocol)
-    assert first.content.startswith(b"PK\x03\x04"), (
+    assert first.startswith(b"PK\x03\x04"), (
         f"document {document.identity} ({document.category}) does not start with the ZIP "
-        f"magic (got {first.content[:16]!r}); {DIVERGED}"
+        f"magic (got {first[:16]!r}); {DIVERGED}"
     )
 
     generated = re.compile(r"^\d+_\d+_\d+\.pdf$", re.IGNORECASE)
     with (
-        zipfile.ZipFile(io.BytesIO(first.content)) as one,
-        zipfile.ZipFile(io.BytesIO(second.content)) as two,
+        zipfile.ZipFile(io.BytesIO(first)) as one,
+        zipfile.ZipFile(io.BytesIO(second)) as two,
     ):
         stable_one = {name for name in one.namelist() if not generated.match(name)}
         stable_two = {name for name in two.namelist() if not generated.match(name)}

@@ -18,7 +18,12 @@ from typing import Any
 from co_docs_watcher.cvm.search import MatchKind
 from co_docs_watcher.cvm.ticker import PrefixSource
 from co_docs_watcher.errors import WatchListError
-from co_docs_watcher.text import normalize_cvm_code
+from co_docs_watcher.text import (
+    CVM_CODE_RULE,
+    MAX_NAME_COMPONENT,
+    PREFIX_RULE,
+    normalize_cvm_code,
+)
 
 __all__ = ["WatchedCompany"]
 
@@ -39,17 +44,37 @@ class WatchedCompany:
 
         Refusing is the point: this file is hand-edited, and an entry quietly dropped for
         being unreadable is a company that stops being monitored without anyone noticing.
+
+        The two fields that leave this file are checked for their shape and never repaired.
+        ``cvm_code`` is what the sweep is filtered against, and a value that merely *contains*
+        digits reduces to a valid code for another company — a typo would go on monitoring
+        someone in silence, which is the failure this whole method exists to prevent.
+        ``prefix`` is a path component: it is joined to the archive root to build the
+        company's folder, so it satisfies ``PREFIX_RULE`` — the same rule an override in the
+        configuration file is held to, since it is the same operator naming the same folder.
+        Neither is sanitized: quietly shortening a name, or reducing one written in
+        punctuation to something else, would file documents under a name nobody wrote.
         """
         if not isinstance(raw, Mapping):
             raise WatchListError(
                 f"{where}: every entry must be a mapping, got {type(raw).__name__}"
             )
-        cvm_code = normalize_cvm_code(str(raw.get("cvm_code", "")))
-        if not cvm_code or len(cvm_code) > 6:
-            raise WatchListError(f"{where}: cvm_code is missing or not a CVM code")
+        written_code = str(raw.get("cvm_code", "")).strip()
+        if not CVM_CODE_RULE.match(written_code):
+            raise WatchListError(
+                f"{where}: cvm_code is missing or not a CVM code "
+                f"(got {raw.get('cvm_code')!r})"
+            )
+        cvm_code = normalize_cvm_code(written_code)
         prefix = str(raw.get("prefix", "") or "").strip()
         if not prefix:
             raise WatchListError(f"{where}: prefix is required; it names the company's folder")
+        if not PREFIX_RULE.match(prefix):
+            raise WatchListError(
+                f"{where}: prefix {prefix!r} is not a folder name: letters, digits and "
+                f"hyphens, at most {MAX_NAME_COMPONENT} characters, starting with a letter "
+                "or a digit"
+            )
         return cls(
             cvm_code=cvm_code,
             prefix=prefix,

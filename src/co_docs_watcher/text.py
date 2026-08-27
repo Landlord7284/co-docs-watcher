@@ -13,6 +13,7 @@ import unicodedata
 
 __all__ = [
     "CVM_CODE_DIGITS",
+    "CVM_CODE_RULE",
     "MAX_NAME_COMPONENT",
     "PREFIX_RULE",
     "normalize_cnpj",
@@ -26,6 +27,14 @@ __all__ = [
 #: The CVM code is six digits, zero-padded. The listing sends ``00951-2``, the payload of a
 #: search expects ``009512``, and the registry publishes ``009512``: one spelling is stored.
 CVM_CODE_DIGITS = 6
+
+#: What a CVM code looks like when someone writes one down: the digits, or the spelling with
+#: the check digit split off that the listing uses. It is checked *before* the value reaches
+#: ``normalize_cvm_code``, because that function drops whatever is not a digit and therefore
+#: answers free text with a code rather than with nothing — ``PETR4`` reduces to company
+#: ``000004``. That generosity is what makes a typed query forgiving; reading an identifier
+#: out of a file is where it has to stop.
+CVM_CODE_RULE = re.compile(rf"^\d{{1,{CVM_CODE_DIGITS}}}$|^\d{{1,{CVM_CODE_DIGITS - 1}}}-\d$")
 
 _NON_DIGITS = re.compile(r"\D+")
 

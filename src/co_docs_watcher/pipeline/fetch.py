@@ -63,7 +63,6 @@ from co_docs_watcher.source import Source
 from co_docs_watcher.text import MAX_NAME_COMPONENT, strip_accents
 
 __all__ = [
-    "MAX_ATTEMPTS",
     "FetchOutcome",
     "archive_path_of",
     "category_component",
@@ -73,11 +72,6 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
-
-#: Failed downloads a document is allowed before it stops being retried. Attempts are counted
-#: across runs, in the manifest: one try per run, so a source that is down for an afternoon
-#: costs a document one attempt, not its whole budget.
-MAX_ATTEMPTS = 3
 
 #: What a category with no usable text is called. Deliberately not invented in Portuguese: the
 #: source's own label is data, its absence is not.
@@ -114,7 +108,7 @@ def fetch_pending(
     staging_root: Path,
     watched: Iterable[WatchedCompany],
     modes: ArchiveModes = DEFAULT_MODES,
-    max_attempts: int = MAX_ATTEMPTS,
+    max_attempts: int,
 ) -> FetchOutcome:
     """Download everything still ``discovered``, one document at a time.
 
@@ -179,7 +173,7 @@ def fetch_pending(
             failed.append(identity)
         except (DocumentError, TransientSourceError) as error:
             manifest.attempts.record(identity, AttemptOutcome.FAILURE, str(error))
-            exhausted = manifest.attempts.failures(identity) >= max_attempts
+            exhausted = manifest.attempts.lifetime_failures(identity) >= max_attempts
             manifest.documents.transition(
                 identity, LocalState.FAILED if exhausted else LocalState.DISCOVERED
             )

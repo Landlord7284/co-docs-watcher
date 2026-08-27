@@ -90,9 +90,10 @@ Config discovery chain, in order: `--config` → `$CO_WATCHER_CONFIG` → `./con
 | `source.retries` | `3` | attempts after a transient failure; `0` disables them |
 | `source.backoff_initial` | `15.0` | first wait between attempts; refused below `min_request_interval` |
 | `source.backoff_factor` | `4.0` | what the wait is multiplied by each attempt |
+| `source.max_document_attempts` | `3` | failed downloads one document gets, counted across runs and never reset |
 | `source.base_url` | `https://www.rad.cvm.gov.br/ENETWeb/` | overridden only to point a test server or a mirror |
 
-`[prefix_overrides]` is a section of its own, keyed by CVM code — `"003549" = "SCHLOSSER"` — and settles a folder name the resolver got typographically right and humanly wrong. Its keys are data rather than schema: this is the single place where an unknown key is not a typo. Values are validated, never sanitized, because an override is a deliberate act and repairing one quietly would name a folder after something nobody wrote.
+`[prefix_overrides]` is a section of its own, keyed by CVM code — `"003549" = "SCHLOSSER"` — and settles a folder name the resolver got typographically right and humanly wrong. Its keys are data rather than schema: this is the single place where an unknown key is not a typo — but it is still a CVM code, *read* as one and never distilled out of something else, since a key that merely contains digits aims the override at a company nobody named. Keys and values are validated, never sanitized, because an override is a deliberate act and repairing one quietly would name a folder after something nobody wrote.
 
 ## Deployment
 
@@ -162,9 +163,9 @@ Step 7 is not zeal: a document downloaded on Monday can be deactivated on Wednes
 
 ### SQLite
 
-`PRAGMA journal_mode = WAL`, `synchronous = NORMAL`, `foreign_keys = ON`, `busy_timeout = 30000`. Migrations versioned by `PRAGMA user_version`. A schema newer than the build understands **refuses to open**, never degrades. No HTTP request happens inside an open transaction: pages are collected in memory first, and every write goes through an explicit `BEGIN IMMEDIATE`.
+`PRAGMA journal_mode = WAL`, `synchronous = NORMAL`, `foreign_keys = ON`, `busy_timeout = 30000`. The journal mode is read back rather than assumed: SQLite answers a `WAL` it cannot honour with the mode it settled on instead of with an error, so a filesystem without the shared memory it needs would leave the manifest in rollback journalling and say nothing — and a manifest that did not open in WAL **refuses to open at all**, which is the same answer `data_root` on a network filesystem already earns. Migrations versioned by `PRAGMA user_version`. A schema newer than the build understands **refuses to open**, never degrades. No HTTP request happens inside an open transaction: pages are collected in memory first, and every write goes through an explicit `BEGIN IMMEDIATE` whose commit is guarded like its body: a transaction left open by a failed commit is refused by every write after it, turning one document's failure into the run's.
 
-Four tables: `documents` (keyed `(document_id, version)`, carrying the source's `status` and our `local_state`), `document_files` (one row per file, with `sha256`, size, and the stability marker), `download_attempts` (what the retry budget is spent against, and where the reason a document is still owed is read back from — `status` lists every non-terminal document with its last failure, verbatim, so that "why is this missing?" is answered without opening SQLite), and `sync_state` (the watermark). The file rows cascade on delete, which is why `foreign_keys = ON` is not decoration.
+Four tables: `documents` (keyed `(document_id, version)`, carrying the source's `status` and our `local_state`), `document_files` (one row per file, with `sha256`, size, and the stability marker), `download_attempts` (what the retry budget is spent against — a lifetime count per document, never a per-run one, and where the reason a document is still owed is read back from — `status` lists every non-terminal document with its last failure, verbatim, so that "why is this missing?" is answered without opening SQLite), and `sync_state` (the watermark). The file rows cascade on delete, which is why `foreign_keys = ON` is not decoration.
 
 ## Archive layout
 
@@ -239,7 +240,7 @@ companies:
     legal_name: PETROLEO BRASILEIRO S.A. PETROBRAS
 ```
 
-`prefix_source` and `matched_by` are recorded because months later "why is this folder called `009512`?" and "why is this company here at all?" must be answerable without re-running anything. Entries are **appended, never sorted** — the order of the file is the human's. An entry that fails to parse aborts the load instead of being skipped: an entry dropped in silence is a company that stops being monitored in silence. `add` never chooses between candidates itself: with a terminal on both stdin and stdout it numbers them and asks which one, and an empty answer cancels without writing; with either stream redirected there is nobody to answer, so the query is refused and the candidates are handed back. The prompt lives in `cli.py` alone — the resolver takes a `Chooser` and nothing below the CLI ever reads from stdin.
+`prefix_source` and `matched_by` are recorded because months later "why is this folder called `009512`?" and "why is this company here at all?" must be answerable without re-running anything. Entries are **appended, never sorted** — the order of the file is the human's. An entry that fails to parse aborts the load instead of being skipped: an entry dropped in silence is a company that stops being monitored in silence. `cvm_code` and `prefix` are checked for their shape on every load and never repaired: a code is *read*, never distilled out of free text, because a value that merely contains digits reduces to a valid code for another company and the sweep would go on monitoring someone nobody asked for; and `prefix` satisfies the same `PREFIX_RULE` an entry in `[prefix_overrides]` is held to, because it is joined to `documents_root` to build the company's folder and it is the same operator naming the same folder. The regulator's own spelling of a code, `00951-2`, is a spelling and not a second code. `add` never chooses between candidates itself: with a terminal on both stdin and stdout it numbers them and asks which one, and an empty answer cancels without writing; with either stream redirected there is nobody to answer, so the query is refused and the candidates are handed back. The prompt lives in `cli.py` alone — the resolver takes a `Chooser` and nothing below the CLI ever reads from stdin.
 
 ## Document identity and states
 
@@ -253,7 +254,7 @@ Publication identity is `(num_sequencia, num_versao)`. It is not lineage identit
 | `downloading` | In flight. Reconciled on the next start. |
 | `available` | On disk, validated. |
 | `skipped` | Seen, but outside current criteria. Re-evaluated every run. |
-| `failed` | Failed after retries. Does not block the batch. |
+| `failed` | Spent `source.max_document_attempts` failed attempts, counted across runs and never reset. Does not block the batch, and rediscovery does not bring it back. |
 | `deactivated` | Was `available`, went back to `Inativo`: file removed, row stays. |
 | `cancelled` | Went `Cancelado`: file removed, and the day's inbox mentions it. |
 | `purged` | Aged out of the window. Nothing more. |

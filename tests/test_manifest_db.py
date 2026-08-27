@@ -103,6 +103,43 @@ def test_an_unopenable_manifest_is_a_manifest_error(tmp_path: Path) -> None:
         connect(directory)
 
 
+def test_a_file_that_is_not_a_database_is_a_manifest_error(tmp_path: Path) -> None:
+    # ``sqlite3.connect`` never reads the file, so this only surfaces at the first pragma.
+    path = tmp_path / "manifest.sqlite"
+    path.write_bytes(b"this is not a database, it only occupies the name of one")
+    with pytest.raises(ManifestError, match="cannot open the manifest"):
+        connect(path)
+
+
+class _RefusesToCommit:
+    """A connection whose ``COMMIT`` fails, which is what a busy or full database does."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def execute(self, statement: str, *args: object) -> sqlite3.Cursor:
+        if statement == "COMMIT":
+            raise sqlite3.OperationalError("database is locked")
+        return self._connection.execute(statement, *args)
+
+
+def test_a_transaction_that_cannot_commit_leaves_none_open(tmp_path: Path) -> None:
+    # A commit that fails must still close the transaction: every write after it on the same
+    # connection would otherwise be refused for a failure that belonged to one document.
+    connection = open_manifest(tmp_path / "manifest.sqlite")
+    refusing = _RefusesToCommit(connection)
+    insert = "INSERT INTO sync_state (key, value, updated_at) VALUES (?, 'v', 'now')"
+
+    with pytest.raises(sqlite3.OperationalError, match="locked"), transaction(refusing):
+        refusing.execute(insert, ("first",))
+
+    with transaction(connection):
+        connection.execute(insert, ("second",))
+    rows = connection.execute("SELECT key FROM sync_state").fetchall()
+    assert [row["key"] for row in rows] == ["second"]
+    connection.close()
+
+
 def test_foreign_keys_cascade(tmp_path: Path) -> None:
     connection = open_manifest(tmp_path / "manifest.sqlite")
     with transaction(connection):

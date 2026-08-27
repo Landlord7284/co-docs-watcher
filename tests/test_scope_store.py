@@ -165,7 +165,16 @@ def test_saving_twice_in_a_row_is_allowed(tmp_path: Path) -> None:
         ("companies:\n  PETR: 009512\n", "must be a list"),
         ("companies:\n  - PETR\n", "every entry must be a mapping"),
         ("companies:\n  - prefix: PETR\n", "cvm_code is missing"),
+        # A code is read, never distilled out of free text: every one of these holds digits,
+        # and reducing them to what is left would monitor a company nobody asked for.
+        ("companies:\n  - cvm_code: PETR4\n    prefix: PETR\n", "not a CVM code"),
+        ("companies:\n  - cvm_code: 00951-2-3\n    prefix: PETR\n", "not a CVM code"),
+        ("companies:\n  - cvm_code: '0095120'\n    prefix: PETR\n", "not a CVM code"),
         ("companies:\n  - cvm_code: '009512'\n", "prefix is required"),
+        # The prefix is joined to the archive root: a folder name, and nothing that walks.
+        ("companies:\n  - cvm_code: '009512'\n    prefix: ../../etc\n", "not a folder name"),
+        ("companies:\n  - cvm_code: '009512'\n    prefix: /tmp/loose\n", "not a folder name"),
+        ("companies:\n  - cvm_code: '009512'\n    prefix: PETR/SUB\n", "not a folder name"),
         (
             "companies:\n  - cvm_code: '009512'\n    prefix: PETR\n    prefix_source: guessed\n",
             "prefix_source must be one of",
@@ -178,6 +187,20 @@ def test_a_file_that_cannot_be_understood_is_refused(
     # Dropping an entry that fails to parse would stop monitoring a company in silence.
     with pytest.raises(WatchListError, match=message):
         WatchList.load(written(tmp_path, content))
+
+
+def test_a_code_written_the_way_the_source_prints_it_is_the_same_code(tmp_path: Path) -> None:
+    # ``00951-2`` is what the listing shows a human who copies it out of the page.
+    content = (
+        "companies:\n"
+        "  - cvm_code: 00951-2\n"
+        "    prefix: PETR\n"
+        "    prefix_source: ticker\n"
+        "    matched_by: ticker\n"
+        "    legal_name: PETROLEO BRASILEIRO S.A. PETROBRAS\n"
+    )
+
+    assert WatchList.load(written(tmp_path, content)).cvm_codes == {"009512"}
 
 
 def test_an_empty_file_is_an_empty_list(tmp_path: Path) -> None:
