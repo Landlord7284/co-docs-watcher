@@ -327,6 +327,12 @@ logs_root = "~/watcher/logs"
         (VALID + '[prefix_overrides]\nPETR = "PETR"\n', "is not a CVM code"),
         (VALID + '[prefix_overrides]\n"009512" = "../escape"\n', "letters, digits and hyphens"),
         (VALID + "[prefix_overrides]\n\"009512\" = 4\n", "letters, digits and hyphens"),
+        # Longer than a folder name may be: refused here rather than shortened downstream,
+        # which would name the folder after something nobody wrote.
+        (
+            VALID + '[prefix_overrides]\n"009512" = "' + "A" * 25 + '"\n',
+            "at most 24 characters",
+        ),
         (VALID + "[files]\ndirectory_mode = 0o10000\n", r"between 0o0 and 0o7777 \(got 0o10000\)"),
         (VALID + "[files]\nfile_mode = -1\n", "between 0o0 and 0o7777"),
         (VALID + '[files]\nfile_mode = "0o644"\n', "must be an integer mode"),

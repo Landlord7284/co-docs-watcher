@@ -18,13 +18,14 @@ the watch list; nothing in this module renames a folder that already exists.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
 from co_docs_watcher.cvm.registry import RegistryRecord
-from co_docs_watcher.text import normalize_cvm_code, reduce_legal_name, safe_component
+from co_docs_watcher.text import PREFIX_RULE, normalize_cvm_code, reduce_legal_name
 
 __all__ = [
     "BARE_ROOT_RULE",
@@ -35,6 +36,8 @@ __all__ = [
     "company_prefix",
     "ticker_root",
 ]
+
+logger = logging.getLogger(__name__)
 
 #: Group 1 is the root, group 2 the class digits: ``PETR4`` → ``PETR``, ``EQMA3B`` → ``EQMA``,
 #: ``ENGI11`` → ``ENGI``, ``B3SA3`` → ``B3SA``.
@@ -99,10 +102,25 @@ def choose_root(codes: Iterable[str]) -> str | None:
 def company_prefix(
     record: RegistryRecord, *, overrides: Mapping[str, str] | None = None
 ) -> CompanyPrefix:
-    """The folder name for a company: override, then ticker root, then name, then code."""
+    """The folder name for a company: override, then ticker root, then name, then code.
+
+    An override is taken **verbatim**. It is validated when the configuration loads, against
+    the same ``PREFIX_RULE`` the rest of the chain satisfies, and repairing one here instead
+    would name a folder after something nobody wrote — silently shortening a long name, or
+    reducing one written in punctuation to the empty string. A value that reaches this
+    function without having been validated is refused rather than repaired, and the company
+    falls back to the step it would have used had no override existed.
+    """
     override = (overrides or {}).get(normalize_cvm_code(record.cvm_code))
+    if override and PREFIX_RULE.match(override):
+        return CompanyPrefix(override, PrefixSource.OVERRIDE)
     if override:
-        return CompanyPrefix(safe_component(override), PrefixSource.OVERRIDE)
+        logger.error(
+            "prefix: the override %r for CVM code %s is not a usable folder name and is "
+            "ignored; the configuration is what validates it",
+            override,
+            record.cvm_code,
+        )
 
     root = choose_root(record.trading_codes)
     if root:

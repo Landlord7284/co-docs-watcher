@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from co_docs_watcher.cvm.registry import RegistryRecord
@@ -123,6 +125,28 @@ def test_an_override_settles_what_the_rule_cannot() -> None:
     assert company_prefix(schlosser, overrides={"003549": "SCHLOSSER"}) == CompanyPrefix(
         "SCHLOSSER", PrefixSource.OVERRIDE
     )
+
+
+def test_an_override_is_taken_verbatim_and_never_repaired() -> None:
+    # Validated at configuration load, not sanitized here: a name shortened or rewritten on
+    # the way to the archive is a folder named after something nobody wrote.
+    long_name = "A" * 24
+
+    assert company_prefix(record(), overrides={"009512": long_name}) == CompanyPrefix(
+        long_name, PrefixSource.OVERRIDE
+    )
+
+
+def test_an_override_that_is_not_a_folder_name_is_refused_and_reported(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Unreachable through the configuration, which validates first. What it must never do is
+    # reach the archive as the empty string, which is what repairing it here used to produce.
+    with caplog.at_level(logging.ERROR):
+        prefix = company_prefix(record(), overrides={"009512": "..."})
+
+    assert "is not a usable folder name" in caplog.text
+    assert prefix == CompanyPrefix("PETR", PrefixSource.TICKER)
 
 
 def test_an_override_for_another_company_changes_nothing() -> None:

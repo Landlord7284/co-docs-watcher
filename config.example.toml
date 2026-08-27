@@ -89,7 +89,9 @@ base_url = "https://www.rad.cvm.gov.br/ENETWeb/"
 # Folder names, keyed by zero-padded CVM code, for when the resolver's pick is
 # typographically right and humanly wrong. Values are validated, never sanitized: an
 # override is a deliberate act, and repairing one quietly would name a folder after
-# something nobody wrote. Renaming here does not rename folders already created — the
-# folder name is a snapshot, and identity lives in the manifest.
+# something nobody wrote. Letters, digits and hyphens, at most 24 characters — the same
+# shape the resolver produces, so a name refused here is one the archive could not hold.
+# Renaming here does not rename folders already created — the folder name is a snapshot,
+# and identity lives in the manifest.
 [prefix_overrides]
 # "003549" = "SCHLOSSER"

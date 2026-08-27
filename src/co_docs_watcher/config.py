@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -44,7 +43,7 @@ from co_docs_watcher.archive_modes import (
 )
 from co_docs_watcher.clock import install_source_timezone
 from co_docs_watcher.errors import ConfigError
-from co_docs_watcher.text import normalize_cvm_code
+from co_docs_watcher.text import MAX_NAME_COMPONENT, PREFIX_RULE, normalize_cvm_code
 
 __all__ = [
     "CONFIG_ENV_VAR",
@@ -110,9 +109,6 @@ DEFAULT_LOG_BACKUPS = 5
 #: Folder-name overrides, keyed by CVM code. The keys are data, not schema, so this section is
 #: the one place where an unknown key is not a typo.
 PREFIX_OVERRIDES_SECTION = "prefix_overrides"
-
-#: What an override may look like: a folder name, in the same charset the resolver produces.
-_PREFIX_RULE = re.compile(r"^[A-Z0-9][A-Z0-9-]{0,31}$")
 
 _SCHEMA: dict[str, set[str]] = {
     "paths": {"data_root", "documents_root", "logs_root"},
@@ -439,10 +435,11 @@ def _prefix_overrides(section: Mapping[str, Any], *, path: Path) -> dict[str, st
                 f"{path}: [{PREFIX_OVERRIDES_SECTION}] {key!r} is not a CVM code; the keys of "
                 "this section are the companies the override applies to"
             )
-        if not isinstance(value, str) or not _PREFIX_RULE.match(value.strip().upper()):
+        if not isinstance(value, str) or not PREFIX_RULE.match(value.strip().upper()):
             raise ConfigError(
                 f"{path}: [{PREFIX_OVERRIDES_SECTION}] {key} must be a folder name of letters, "
-                f"digits and hyphens (got {value!r})"
+                f"digits and hyphens, at most {MAX_NAME_COMPONENT} characters long "
+                f"(got {value!r})"
             )
         overrides[code] = value.strip().upper()
     return overrides

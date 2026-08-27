@@ -14,6 +14,7 @@ import unicodedata
 __all__ = [
     "CVM_CODE_DIGITS",
     "MAX_NAME_COMPONENT",
+    "PREFIX_RULE",
     "normalize_cnpj",
     "normalize_cvm_code",
     "normalize_key",
@@ -68,6 +69,12 @@ _LEGAL_FORMS = frozenset({"SA", "SAS", "LTDA", "CIA", "COMPANHIA", "EIRELI", "ME
 _SITUATIONS = re.compile(r"\bEM (RECUPERACAO|LIQUIDACAO|FALENCIA)\b.*$")
 
 _NON_ALPHANUMERIC = re.compile(r"[^A-Z0-9]+")
+
+#: What a finished folder name looks like, derived from the one length limit above. It is the
+#: shape ``safe_component`` produces *and* the shape an operator's override is checked against,
+#: and it is defined once because those two must not be able to disagree: a rule looser than
+#: the producer would let a configured name through that the archive then quietly shortens.
+PREFIX_RULE = re.compile(rf"^[A-Z0-9][A-Z0-9-]{{0,{MAX_NAME_COMPONENT - 1}}}$")
 
 
 def strip_accents(text: str) -> str:
