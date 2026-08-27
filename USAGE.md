@@ -216,7 +216,11 @@ A document is retried for three failed attempts, one per run, and then stays `fa
 (`rm`), and never reorders the file; comments and formatting survive its rewrites. An edit
 you make while the watcher is writing wins — the watcher abandons its own write rather
 than overwrite yours. Editing entries by hand is fine; an entry that fails to parse aborts
-the load rather than being silently skipped.
+the load rather than being silently skipped. `cvm_code` is a CVM code (`009512`, or `00951-2` the way
+the source prints it) and `prefix` is a folder name — letters, digits and hyphens, at
+most 24 characters. Neither is repaired for you: a code distilled out of something else
+would monitor another company, and a prefix that is a path would file documents outside
+the archive.
 
 ## The archive
 
