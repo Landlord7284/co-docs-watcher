@@ -2,7 +2,7 @@
 
 Contrato levantado por inspeção do JavaScript da página e por requisições reais
 contra o ambiente de produção da CVM em **24/08/2026**. Não existe contrato de
-API: isto é raspagem de um endpoint de UI. Re-verificar, não confiar
+API: isto é scraping de um endpoint de UI. Re-verificar, não confiar
 indefinidamente.
 
 O sistema entrou no ar em **06/07/2026**, substituindo o `ENETCONSULTA`. Receitas
