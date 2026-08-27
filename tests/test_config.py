@@ -418,6 +418,10 @@ logs_root = "~/watcher/logs"
         (VALID + "[retention]\nweeks = 3\n", "unknown key"),
         (VALID + "[registry]\nmax_age_days = 0\n", "integer >= 1"),
         (VALID + '[prefix_overrides]\nPETR = "PETR"\n', "is not a CVM code"),
+        # Normalizing is not validating: stripping the non-digits out of these leaves
+        # ``000004`` and ``20260824``, an override aimed at a company nobody named.
+        (VALID + '[prefix_overrides]\nPETR4 = "PETR"\n', "is not a CVM code"),
+        (VALID + '[prefix_overrides]\n"2026-08-24" = "PETR"\n', "is not a CVM code"),
         (VALID + '[prefix_overrides]\n"009512" = "../escape"\n', "letters, digits and hyphens"),
         (VALID + "[prefix_overrides]\n\"009512\" = 4\n", "letters, digits and hyphens"),
         # Longer than a folder name may be: refused here rather than shortened downstream,

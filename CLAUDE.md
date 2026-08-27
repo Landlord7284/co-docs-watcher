@@ -92,7 +92,7 @@ Config discovery chain, in order: `--config` → `$CO_WATCHER_CONFIG` → `./con
 | `source.backoff_factor` | `4.0` | what the wait is multiplied by each attempt |
 | `source.base_url` | `https://www.rad.cvm.gov.br/ENETWeb/` | overridden only to point a test server or a mirror |
 
-`[prefix_overrides]` is a section of its own, keyed by CVM code — `"003549" = "SCHLOSSER"` — and settles a folder name the resolver got typographically right and humanly wrong. Its keys are data rather than schema: this is the single place where an unknown key is not a typo. Values are validated, never sanitized, because an override is a deliberate act and repairing one quietly would name a folder after something nobody wrote.
+`[prefix_overrides]` is a section of its own, keyed by CVM code — `"003549" = "SCHLOSSER"` — and settles a folder name the resolver got typographically right and humanly wrong. Its keys are data rather than schema: this is the single place where an unknown key is not a typo — but it is still a CVM code, *read* as one and never distilled out of something else, since a key that merely contains digits aims the override at a company nobody named. Keys and values are validated, never sanitized, because an override is a deliberate act and repairing one quietly would name a folder after something nobody wrote.
 
 ## Deployment
 

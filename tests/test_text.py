@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from co_docs_watcher.text import (
+    CVM_CODE_RULE,
     normalize_cnpj,
     normalize_cvm_code,
     normalize_key,
@@ -29,6 +30,29 @@ from co_docs_watcher.text import (
 )
 def test_cvm_codes_reduce_to_one_spelling(raw: str | int, expected: str) -> None:
     assert normalize_cvm_code(raw) == expected
+
+
+@pytest.mark.parametrize(
+    ("written", "accepted"),
+    [
+        ("00951-2", True),  # the regulator's own hyphenated spelling
+        ("009512", True),
+        ("9512", True),
+        ("0", True),
+        ("PETR4", False),  # normalizes to 000004: a different company entirely
+        ("2026-08-24", False),  # normalizes to 20260824
+        ("PETR", False),
+        ("", False),
+        ("1234567", False),  # longer than a CVM code
+        ("00951-23", False),
+    ],
+)
+def test_the_written_code_is_validated_before_it_is_normalized(
+    written: str, accepted: bool
+) -> None:
+    # normalize_cvm_code drops every non-digit, so text that was never a code comes back
+    # looking like one. Whoever reads a code out of a hand-written file matches this first.
+    assert bool(CVM_CODE_RULE.match(written)) is accepted
 
 
 @pytest.mark.parametrize(

@@ -43,7 +43,12 @@ from co_docs_watcher.archive_modes import (
 )
 from co_docs_watcher.clock import install_source_timezone
 from co_docs_watcher.errors import ConfigError
-from co_docs_watcher.text import MAX_NAME_COMPONENT, PREFIX_RULE, normalize_cvm_code
+from co_docs_watcher.text import (
+    CVM_CODE_RULE,
+    MAX_NAME_COMPONENT,
+    PREFIX_RULE,
+    normalize_cvm_code,
+)
 
 __all__ = [
     "CONFIG_ENV_VAR",
@@ -496,12 +501,13 @@ def _prefix_overrides(section: Mapping[str, Any], *, path: Path) -> dict[str, st
     """
     overrides: dict[str, str] = {}
     for key, value in section.items():
-        code = normalize_cvm_code(str(key))
-        if not code or len(code) > 6:
+        written = str(key).strip()
+        if not CVM_CODE_RULE.match(written):
             raise ConfigError(
                 f"{path}: [{PREFIX_OVERRIDES_SECTION}] {key!r} is not a CVM code; the keys of "
                 "this section are the companies the override applies to"
             )
+        code = normalize_cvm_code(written)
         if not isinstance(value, str) or not PREFIX_RULE.match(value.strip().upper()):
             raise ConfigError(
                 f"{path}: [{PREFIX_OVERRIDES_SECTION}] {key} must be a folder name of letters, "
