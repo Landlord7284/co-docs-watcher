@@ -114,8 +114,13 @@ def open_source(config: Config) -> Iterator[Source]:
         base_url=config.source_base_url,
         min_request_interval=config.min_request_interval,
         max_requests_per_run=config.max_requests_per_run,
+        retries=config.retries,
+        backoff_initial=config.backoff_initial,
+        backoff_factor=config.backoff_factor,
+        max_listing_bytes=config.max_listing_bytes,
+        max_download_bytes=config.max_download_bytes,
     ) as client:
-        yield RadSource(client)
+        yield RadSource(client, max_extracted_bytes=config.max_extracted_bytes)
 
 
 def probe_source(config: Config) -> str:
@@ -131,6 +136,7 @@ def probe_source(config: Config) -> str:
         base_url=config.source_base_url,
         min_request_interval=config.min_request_interval,
         max_requests_per_run=1,
+        max_listing_bytes=config.max_listing_bytes,
         retries=0,
     ) as client:
         listing = client.list_documents(today)

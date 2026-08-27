@@ -47,15 +47,21 @@ from co_docs_watcher.text import MAX_NAME_COMPONENT, PREFIX_RULE, normalize_cvm_
 
 __all__ = [
     "CONFIG_ENV_VAR",
+    "DEFAULT_BACKOFF_FACTOR",
+    "DEFAULT_BACKOFF_INITIAL",
     "DEFAULT_DIRECTORY_MODE",
     "DEFAULT_FILE_MODE",
     "DEFAULT_LOG_BACKUPS",
     "DEFAULT_LOG_MAX_BYTES",
+    "DEFAULT_MAX_DOWNLOAD_BYTES",
+    "DEFAULT_MAX_EXTRACTED_BYTES",
+    "DEFAULT_MAX_LISTING_BYTES",
     "DEFAULT_MAX_REQUESTS_PER_RUN",
     "DEFAULT_MIN_REQUEST_INTERVAL",
     "DEFAULT_MONITOR_DAYS",
     "DEFAULT_REGISTRY_MAX_AGE_DAYS",
     "DEFAULT_RETENTION_DAYS",
+    "DEFAULT_RETRIES",
     "DEFAULT_SOURCE_BASE_URL",
     "DEFAULT_TIMEZONE",
     "Config",
@@ -87,6 +93,27 @@ DEFAULT_MIN_REQUEST_INTERVAL = 15.0
 #: Safety fuse: a single run never issues more requests than this, whatever it still has to do.
 DEFAULT_MAX_REQUESTS_PER_RUN = 200
 
+#: What a single answer from the source may weigh. A full market day measured ~500 KB for 479
+#: documents and the largest measured delivery is an 8.6 MB ITR package, so both caps sit far
+#: past any real answer: they bound what a malfunction can spend, and are not a size limit on
+#: documents. They are read while the body streams in, so the memory is bounded rather than
+#: measured after the fact.
+DEFAULT_MAX_LISTING_BYTES = 64 * 1024 * 1024
+DEFAULT_MAX_DOWNLOAD_BYTES = 256 * 1024 * 1024
+
+#: What the members of one container may add up to, uncompressed. The cap is what stands
+#: between the archive and a compression bomb, and it is checked against the container's own
+#: declared sizes before a single member is written.
+DEFAULT_MAX_EXTRACTED_BYTES = 1024 * 1024 * 1024
+
+#: Attempts after a transient failure, and the shape of the wait between them: the first
+#: backoff, then multiplied by the factor each time. The backend was measured staying down for
+#: about an hour, so the waits are long on purpose — short retries would spend the request
+#: budget without outliving the outage.
+DEFAULT_RETRIES = 3
+DEFAULT_BACKOFF_INITIAL = 15.0
+DEFAULT_BACKOFF_FACTOR = 4.0
+
 #: Days a cached FCA package is considered current. The registry only moves when a company
 #: files a registration form, so a week-old snapshot names companies exactly as today's does.
 DEFAULT_REGISTRY_MAX_AGE_DAYS = 7
@@ -117,7 +144,18 @@ _SCHEMA: dict[str, set[str]] = {
     "files": {"directory_mode", "file_mode"},
     "discovery": {"days", "monitor_days"},
     "registry": {"max_age_days"},
-    "source": {"timezone", "min_request_interval", "max_requests_per_run", "base_url"},
+    "source": {
+        "timezone",
+        "min_request_interval",
+        "max_requests_per_run",
+        "max_listing_bytes",
+        "max_download_bytes",
+        "max_extracted_bytes",
+        "retries",
+        "backoff_initial",
+        "backoff_factor",
+        "base_url",
+    },
 }
 
 
@@ -152,6 +190,12 @@ class Config:
     monitor_days: int
     min_request_interval: float
     max_requests_per_run: int
+    max_listing_bytes: int
+    max_download_bytes: int
+    max_extracted_bytes: int
+    retries: int
+    backoff_initial: float
+    backoff_factor: float
     registry_max_age_days: int
     source_base_url: str
     prefix_overrides: Mapping[str, str]
@@ -276,6 +320,12 @@ def load_config(
             monitor_days=DEFAULT_MONITOR_DAYS,
             min_request_interval=DEFAULT_MIN_REQUEST_INTERVAL,
             max_requests_per_run=DEFAULT_MAX_REQUESTS_PER_RUN,
+            max_listing_bytes=DEFAULT_MAX_LISTING_BYTES,
+            max_download_bytes=DEFAULT_MAX_DOWNLOAD_BYTES,
+            max_extracted_bytes=DEFAULT_MAX_EXTRACTED_BYTES,
+            retries=DEFAULT_RETRIES,
+            backoff_initial=DEFAULT_BACKOFF_INITIAL,
+            backoff_factor=DEFAULT_BACKOFF_FACTOR,
             registry_max_age_days=DEFAULT_REGISTRY_MAX_AGE_DAYS,
             source_base_url=DEFAULT_SOURCE_BASE_URL,
             prefix_overrides={},
@@ -324,6 +374,9 @@ def _from_file(path: Path) -> Config:
     discovery_days, monitor_days = _discovery_windows(
         discovery, retention_days=retention_days, path=path
     )
+    min_request_interval = _positive_float(
+        source, "min_request_interval", DEFAULT_MIN_REQUEST_INTERVAL, where="source", path=path
+    )
 
     return Config(
         data_root=_root_path(paths, "data_root", where="paths", path=path),
@@ -345,11 +398,25 @@ def _from_file(path: Path) -> Config:
         retention_days=retention_days,
         discovery_days=discovery_days,
         monitor_days=monitor_days,
-        min_request_interval=_positive_float(
-            source, "min_request_interval", DEFAULT_MIN_REQUEST_INTERVAL, where="source", path=path
-        ),
+        min_request_interval=min_request_interval,
         max_requests_per_run=_positive_int(
             source, "max_requests_per_run", DEFAULT_MAX_REQUESTS_PER_RUN, where="source", path=path
+        ),
+        max_listing_bytes=_positive_int(
+            source, "max_listing_bytes", DEFAULT_MAX_LISTING_BYTES, where="source", path=path
+        ),
+        max_download_bytes=_positive_int(
+            source, "max_download_bytes", DEFAULT_MAX_DOWNLOAD_BYTES, where="source", path=path
+        ),
+        max_extracted_bytes=_positive_int(
+            source, "max_extracted_bytes", DEFAULT_MAX_EXTRACTED_BYTES, where="source", path=path
+        ),
+        retries=_non_negative_int(source, "retries", DEFAULT_RETRIES, where="source", path=path),
+        backoff_initial=_backoff_initial(
+            source, min_request_interval=min_request_interval, path=path
+        ),
+        backoff_factor=_number_at_least(
+            source, "backoff_factor", DEFAULT_BACKOFF_FACTOR, minimum=1.0, where="source", path=path
         ),
         registry_max_age_days=_positive_int(
             registry,
@@ -522,6 +589,52 @@ def _mode(
     if not 0 <= value <= MAX_MODE:
         raise ConfigError(
             f"{path}: [{where}] {key} must be between 0o0 and {MAX_MODE:#o} (got {value:#o})"
+        )
+    return value
+
+
+def _non_negative_int(
+    section: Mapping[str, Any], key: str, default: int, *, where: str, path: Path
+) -> int:
+    """An integer count that may legitimately be zero — no retries is a policy, not an error."""
+    if key not in section:
+        return default
+    value = section[key]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ConfigError(f"{path}: [{where}] {key} must be an integer >= 0")
+    return value
+
+
+def _number_at_least(
+    section: Mapping[str, Any], key: str, default: float, *, minimum: float, where: str, path: Path
+) -> float:
+    if key not in section:
+        return default
+    value = section[key]
+    if isinstance(value, bool) or not isinstance(value, int | float) or value < minimum:
+        raise ConfigError(f"{path}: [{where}] {key} must be a number >= {minimum}")
+    return float(value)
+
+
+def _backoff_initial(
+    section: Mapping[str, Any], *, min_request_interval: float, path: Path
+) -> float:
+    """The first wait after a transient failure, which may not sit below the request floor.
+
+    Both waits happen before a retry and the second covers only what the first left, so the
+    effective spacing is the larger of the two: a backoff under ``min_request_interval`` is
+    not a shorter wait, it is a number the floor overrides in silence. The default follows
+    the floor for that reason — a file that raises the interval and names no backoff still
+    has a backoff that means something — but a written value is validated and never clamped,
+    exactly as the discovery windows are.
+    """
+    default = max(DEFAULT_BACKOFF_INITIAL, min_request_interval)
+    value = _positive_float(section, "backoff_initial", default, where="source", path=path)
+    if value < min_request_interval:
+        raise ConfigError(
+            f"{path}: [source] backoff_initial ({value}) is below min_request_interval "
+            f"({min_request_interval}): the interval already separates two requests, so a "
+            "shorter backoff would have no effect"
         )
     return value
 

@@ -17,6 +17,7 @@ import logging
 from collections.abc import Sequence
 from datetime import date
 
+from co_docs_watcher.errors import SourceContractError
 from co_docs_watcher.models import SourceDocument
 from co_docs_watcher.rad.client import RadClient
 from co_docs_watcher.rad.schema import parse_listing
@@ -36,7 +37,14 @@ def sweep(client: RadClient, days: Sequence[date]) -> list[SourceDocument]:
     """
     documents: list[SourceDocument] = []
     for day in days:
-        found = parse_listing(client.list_documents(day))
+        payload = client.list_documents(day)
+        try:
+            found = parse_listing(payload)
+        except SourceContractError as error:
+            # The row number is the parser's; which request produced it is only known here,
+            # and a divergence reported without it sends a reader to re-fetch seven days to
+            # find out which one to look at.
+            raise SourceContractError(f"listing for {day.isoformat()}: {error}") from error
         logger.info("listing: %s delivered %d documents, whole market", day, len(found))
         documents.extend(found)
     return documents

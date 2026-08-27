@@ -7,6 +7,19 @@ its row silently; the only defense is to validate that every row has exactly twe
 and abort the whole collection on divergence. The system is recently migrated (live since
 2026-07-06): a partially understood payload is worse than none.
 
+Twelve is a count, not a shape. Eight of the twelve fields refuse a value that is not
+theirs — a CVM code, two sort keys, a status, a version, a modality, a download call — and
+the remaining four are prose, which no value is wrong for on its own. That asymmetry is
+where a young wire format drifts unnoticed: a column redefined in place, a subject that
+starts arriving as markup, an icons block copied into the field beside it, each of them
+leaving twelve fields with eight of them still perfectly valid. What prose can be checked
+for is the markers of the fields that are *not* prose — the ``<spanOrder>`` sort key of
+fields 4 to 6 and the download call of field 10 — and either one where prose belongs aborts
+the collection. An exact swap of two prose fields for each other stays invisible; nothing
+structural can see it, and the archive would carry the category under the type's name
+without a word. That is the residue of an unescaped wire format, recorded here rather than
+argued away.
+
 Fields 4 to 6 embed a normalized sort key in ``<spanOrder>`` tags. For the two dates it is
 ``yyyymmdd`` and is parsed instead of the display format; for the species (field 4) the key
 carries the species text itself — free text, empty on structured documents (measured
@@ -61,6 +74,11 @@ _DOWNLOAD_CALL = re.compile(
 )
 
 _SORT_KEY_DATE = re.compile(r"^(?P<year>\d{4})(?P<month>\d{2})(?P<day>\d{2})$")
+
+#: What a prose field must never contain: the source's own markers for the fields that carry
+#: structure. Quoted literally, as wire vocabulary is — and deliberately just these two, so
+#: that the check refuses a displaced column and never a company writing ``<`` in a subject.
+_STRUCTURAL_MARKERS = ("<spanOrder>", "OpenDownloadDocumentos(")
 
 
 def parse_listing(payload: str) -> list[SourceDocument]:
@@ -122,11 +140,11 @@ def parse_row(row: str, index: int = 0) -> SourceDocument:
         version=version,
         protocol=protocol,
         cvm_code=cvm_code,
-        legal_name=fields[1].strip(),
-        category=_text(fields[2]),
-        doc_type=_text(fields[3]),
+        legal_name=_prose(fields[1], index, what="field 1 (legal name)"),
+        category=_display(fields[2], index, what="field 2 (category)"),
+        doc_type=_display(fields[3], index, what="field 3 (type)"),
         species=_span_order_key(fields[4], index, what="field 4 (species)"),
-        subject=fields[11].strip(),
+        subject=_prose(fields[11], index, what="field 11 (subject)"),
         modality=modality,
         status=status,
         delivery_date=delivery_date,
@@ -134,9 +152,29 @@ def parse_row(row: str, index: int = 0) -> SourceDocument:
     )
 
 
-def _text(field: str) -> str:
-    """A display field, with the page's ``-`` placeholder read as absence."""
-    stripped = field.strip()
+def _prose(field: str, index: int, *, what: str) -> str:
+    """A field that carries prose, refused if it carries a structured field's marker.
+
+    There is no value this field could hold that is wrong on its own — which is exactly why
+    it is the one place a displaced column would land unnoticed.
+    """
+    for marker in _STRUCTURAL_MARKERS:
+        if marker in field:
+            raise SourceContractError(
+                f"listing row {index}: {what} carries {marker!r}, which belongs to a "
+                "structured field: the columns have moved and the row cannot be trusted"
+            )
+    return field.strip()
+
+
+def _display(field: str, index: int, *, what: str) -> str:
+    """Prose, with the page's ``-`` placeholder read as absence.
+
+    Only the type and the species arrive spelled that way (measured 2026-08-24), so the
+    reading is not extended to the name or the subject: a subject of ``-`` is a subject the
+    company wrote, and turning it into silence would be inventing an absence.
+    """
+    stripped = _prose(field, index, what=what)
     return "" if stripped == "-" else stripped
 
 

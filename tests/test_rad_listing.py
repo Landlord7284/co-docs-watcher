@@ -6,7 +6,7 @@ from datetime import date
 
 import pytest
 
-from co_docs_watcher.errors import TransientSourceError
+from co_docs_watcher.errors import SourceContractError, TransientSourceError
 from co_docs_watcher.models import SourceStatus
 from co_docs_watcher.rad.listing import sweep
 from tests import rad
@@ -70,6 +70,17 @@ def test_a_failed_day_propagates_instead_of_shrinking_the_window() -> None:
     client = FakeClient({date(2026, 8, 19): "", date(2026, 8, 20): "boom"})
 
     with pytest.raises(TransientSourceError):
+        sweep(client, WINDOW)  # type: ignore[arg-type]
+
+
+def test_a_divergent_row_names_the_day_it_came_from() -> None:
+    # The parser counts rows inside one payload; which request produced that payload is only
+    # known here, and a divergence without it sends a reader back over the whole window.
+    payloads = dict.fromkeys(WINDOW, rad.payload(rad.row()))
+    payloads[WINDOW[1]] = rad.payload(rad.row(modality="XX"))
+    client = FakeClient(payloads)
+
+    with pytest.raises(SourceContractError, match="listing for 2026-08-20: listing row 0"):
         sweep(client, WINDOW)  # type: ignore[arg-type]
 
 

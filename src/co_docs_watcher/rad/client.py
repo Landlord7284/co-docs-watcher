@@ -2,6 +2,10 @@
 
 There is no session, no cookie, and no ``__VIEWSTATE``: the search is a single JSON POST and
 the download a single GET, verified to answer identically with no cookie at all. What the
+download hands back is the body and nothing else: ``Content-Type`` says ``text/html`` for
+PDFs and ZIPs alike and ``Content-Disposition`` names nothing a human or a machine can use,
+so carrying either one further would only offer a later decision a header this source is
+measured lying in. What the
 transport owns instead is discipline, shared by both paths, because the WCF service behind
 the page drops under load and stays down for about an hour: a minimum interval between any
 two requests, a per-run request cap, and exponential backoff on transient failures.
@@ -11,7 +15,10 @@ in ``msgErro`` — a retryable :class:`TransientSourceError`, never an empty res
 that reads a backend failure as "nothing new" records silence as good news.
 ``SolicitarCaptcha: "S"`` is the opposite of retryable: there is no legitimate workaround,
 insisting aggravates the trigger, and the only remedy is reducing frequency — the error is
-terminal and the run ends with exit code 4.
+terminal and the run ends with exit code 4. It is read as a vocabulary of two, ``"S"`` and
+``"N"``, and never as "S or not": a demand this build fails to recognize is answered by
+insisting, which is the one reaction that makes the source's answer worse, so a third
+spelling is contract divergence and says so.
 """
 
 from __future__ import annotations
@@ -20,7 +27,6 @@ import json
 import logging
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
 from datetime import date
 from types import TracebackType
 from typing import Any, TypeVar
@@ -43,7 +49,6 @@ __all__ = [
     "MAX_DOWNLOAD_BYTES",
     "MAX_LISTING_BYTES",
     "RadClient",
-    "RawDownload",
     "search_payload",
 ]
 
@@ -63,16 +68,17 @@ DEFAULT_MIN_REQUEST_INTERVAL = 15.0
 #: The safety fuse: one run never issues more requests than this.
 DEFAULT_MAX_REQUESTS_PER_RUN = 200
 
-#: A full market day measured ~500 KB for 479 documents; the cap is well past any real
-#: listing and well short of a response that could exhaust memory.
+#: What one answer may weigh, and the fallbacks only: the configuration file is where these
+#: are meant to be set. A full market day measured ~500 KB for 479 documents and the largest
+#: measured delivery is an 8.6 MB ITR package, so both sit far past any real answer — they
+#: bound what a malfunction can spend rather than limiting how large a document may be, and
+#: they are counted while the body streams in, so memory is bounded and not merely measured.
 MAX_LISTING_BYTES = 64 * 1024 * 1024
-
-#: The largest measured delivery is an 8.6 MB ITR package; structured filings grow, but a
-#: response past this cap is a source malfunction, not a document.
 MAX_DOWNLOAD_BYTES = 256 * 1024 * 1024
 
-#: Backoff after a transient failure: 15 s, then 60 s, then 240 s. The backend was observed
-#: staying down for about an hour, so short retries would only spend the request budget.
+#: Backoff after a transient failure: 15 s, then 60 s, then 240 s, and the fallbacks only. The
+#: backend was observed staying down for about an hour, so short retries would spend the
+#: request budget without outliving the outage.
 DEFAULT_RETRIES = 3
 DEFAULT_BACKOFF_INITIAL = 15.0
 DEFAULT_BACKOFF_FACTOR = 4.0
@@ -83,6 +89,12 @@ _T = TypeVar("_T")
 
 #: The keys every answer must carry before it means anything.
 _ENVELOPE_KEYS = frozenset({"temErro", "msgErro", "SolicitarCaptcha", "dados"})
+
+#: The whole vocabulary of ``SolicitarCaptcha``. Checked against both spellings rather than
+#: against ``"S"`` alone, because the reaction to an unrecognized demand would be to carry on
+#: requesting. A tuple and not a set: the value is whatever JSON delivered, and membership in
+#: a set would hash it — a list on the wire would then raise something nobody is catching.
+_CAPTCHA_ANSWERS = ("S", "N")
 
 
 def search_payload(day: date, companies: Sequence[str] = ()) -> dict[str, str]:
@@ -115,18 +127,6 @@ def search_payload(day: date, companies: Sequence[str] = ()) -> dict[str, str]:
     }
 
 
-@dataclass(frozen=True, slots=True)
-class RawDownload:
-    """One download response, still unexamined.
-
-    ``content_disposition`` travels along only as the secondary hint the sniffing order
-    allows it to be; it never names a file and never decides a type on its own.
-    """
-
-    content: bytes
-    content_disposition: str
-
-
 class RadClient:
     """The one transport both halves of the adapter share.
 
@@ -149,6 +149,11 @@ class RadClient:
         sleep: Callable[[float], None] | None = None,
         monotonic: Callable[[], float] | None = None,
     ) -> None:
+        if retries < 0:
+            # Every other number here degrades into something with a meaning — an interval
+            # below zero is no wait, a budget of zero refuses the first request — and this
+            # one degrades into no attempt at all, which is not a policy anybody could want.
+            raise ValueError(f"retries cannot be negative, got {retries}")
         self._base_url = base_url.rstrip("/") + "/"
         self._min_interval = min_request_interval
         self._max_requests = max_requests_per_run
@@ -197,12 +202,13 @@ class RadClient:
             lambda: self._search(payload), what=f"listing {day.isoformat()}"
         )
 
-    def fetch_document(self, document_id: int, version: int, protocol: str) -> RawDownload:
-        """One document's bytes, whatever they turn out to be.
+    def fetch_document(self, document_id: int, version: int, protocol: str) -> bytes:
+        """One document's bytes, whatever they turn out to be, and nothing else.
 
         The protocol is a required argument, persisted at discovery — it cannot be derived,
         and without it a document discovered today could not be downloaded tomorrow.
-        ``descTipo`` goes empty: measured working for every category.
+        ``descTipo`` goes empty: measured working for every category. The response headers
+        stop here: what the body is gets decided by the body.
         """
         params = {
             "Tela": "ext",
@@ -231,8 +237,8 @@ class RadClient:
         )
         return _open_envelope(body)
 
-    def _download(self, params: dict[str, str]) -> RawDownload:
-        content, headers = self._request(
+    def _download(self, params: dict[str, str]) -> bytes:
+        content, _ = self._request(
             "GET",
             self._base_url + _DOWNLOAD_PATH,
             cap=self._max_download_bytes,
@@ -241,10 +247,7 @@ class RadClient:
             ),
             params=params,
         )
-        return RawDownload(
-            content=content,
-            content_disposition=headers.get("content-disposition", ""),
-        )
+        return content
 
     # --- Discipline. ---
 
@@ -255,12 +258,10 @@ class RadClient:
         with insistence, and the captcha in particular gets worse.
         """
         delay = self._backoff_initial
-        for attempt in range(self._retries + 1):
+        for attempt in range(self._retries):
             try:
                 return operation()
             except TransientSourceError as error:
-                if attempt == self._retries:
-                    raise
                 logger.warning(
                     "source: %s failed (%s); attempt %d of %d, backing off %.0f s",
                     what,
@@ -271,7 +272,11 @@ class RadClient:
                 )
                 self._sleep(delay)
                 delay *= self._backoff_factor
-        raise AssertionError("unreachable")
+        # The last attempt is the one nothing follows, so its failure is simply the caller's.
+        # Written outside the loop rather than as a branch inside it: the alternative needs a
+        # line after the loop that cannot be reached, and a line that cannot be reached is a
+        # claim about the loop rather than a fact about it.
+        return operation()
 
     def _request(
         self,
@@ -346,7 +351,12 @@ def _open_envelope(body: bytes) -> str:
     missing = sorted(_ENVELOPE_KEYS - envelope.keys())
     if missing:
         raise SourceContractError(f"the listing envelope is missing {', '.join(missing)}")
-    if envelope["SolicitarCaptcha"] == "S":
+    captcha = envelope["SolicitarCaptcha"]
+    if captcha not in _CAPTCHA_ANSWERS:
+        raise SourceContractError(
+            f"the envelope's SolicitarCaptcha is neither 'S' nor 'N': {captcha!r}"
+        )
+    if captcha == "S":
         raise CaptchaRequiredError(
             "the source demanded a captcha; there is no legitimate workaround — reduce "
             "the run frequency"

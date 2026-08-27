@@ -83,6 +83,28 @@ timezone = "America/Sao_Paulo"
 min_request_interval = 15.0
 # Safety fuse: a single run never issues more requests than this, whatever it has left to do.
 max_requests_per_run = 200
+# What one answer from the source may weigh. A full market day measured ~500 KB and the
+# largest measured delivery is an 8.6 MB package, so both sit far past any real answer: they
+# bound what a malfunction can spend, and are not a size limit on documents. Both are counted
+# while the body streams in, so memory is bounded rather than measured after the fact.
+max_listing_bytes = 67108864
+max_download_bytes = 268435456
+# What the members of one container may add up to, uncompressed — what stands between the
+# archive and a compression bomb. Checked against the container's own declared sizes before a
+# single member is written.
+max_extracted_bytes = 1073741824
+# Attempts after a transient failure, and the shape of the wait between them: the first
+# backoff, multiplied by the factor each time. The backend was measured staying down for about
+# an hour, so the waits are long on purpose — short retries spend the request budget without
+# outliving the outage. retries = 0 disables them.
+#
+# backoff_initial may not sit below min_request_interval: both waits happen before a retry and
+# the interval covers whatever the backoff left, so a shorter backoff is not a shorter wait,
+# it is a number the floor overrides in silence. Raise the interval and leave this unset and
+# it follows along; write it too low and the file is refused.
+retries = 3
+backoff_initial = 15.0
+backoff_factor = 4.0
 # Overridden only to point at a test server or a mirror.
 base_url = "https://www.rad.cvm.gov.br/ENETWeb/"
 

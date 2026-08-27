@@ -55,7 +55,9 @@ class Site:
     def cli(self, *args: str) -> int:
         return cli.main(["--config", str(self.config), *args])
 
-    def write_config(self, *, retention_days: int = 7) -> None:
+    def write_config(self, *, retention_days: int = 7, source: str = "") -> None:
+        """``source`` is appended to ``[source]``: the knobs a scenario wants to prove reach
+        the adapter, written where an operator would write them."""
         self.config.write_text(
             "[paths]\n"
             f'data_root = "{self.data_root}"\n'
@@ -65,7 +67,7 @@ class Site:
             f"days = {retention_days}\n"
             "[source]\n"
             f'base_url = "{self.server.base_url}"\n'
-            "min_request_interval = 0.001\n",
+            "min_request_interval = 0.001\n" + source,
             encoding="utf-8",
         )
 
@@ -306,6 +308,49 @@ def test_a_backend_that_stays_down_backs_off_and_exits_1(
 
     site.server.scenario.failing_listings = 0
     assert site.cli("run") == 0
+
+
+# --- The [source] knobs, proved through the composition root. ---
+#
+# Every value below is a limit on what one run may spend or accept, and none of them can be
+# reached from anywhere but the configuration file — so what each of these asserts is not the
+# limit itself, which is unit-tested, but that the number written in the file is the number
+# the adapter ends up holding.
+
+
+def test_the_retry_policy_written_in_the_configuration_is_the_one_used(
+    site: Site, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    site.write_config(source="retries = 1\nbackoff_initial = 30.0\nbackoff_factor = 2.0\n")
+    site.server.scenario.failing_listings = 10**9
+    slept: list[float] = []
+    monkeypatch.setattr(time, "sleep", slept.append)
+
+    assert site.cli("run") == 1
+
+    # One retry, waiting what the file said — not the three of 15, 60 and 240 s built in.
+    assert [pause for pause in slept if pause >= 15] == [30.0]
+
+
+def test_a_download_cap_written_in_the_configuration_refuses_the_document(site: Site) -> None:
+    site.write_config(source="max_download_bytes = 8\n")
+    site.server.scenario.documents.append(pdf_today())
+
+    assert site.cli("run") == 1
+
+    assert not (site.day_dir(TODAY) / "PETR").exists()
+    # The document, not the run: it goes back to the queue with an attempt spent.
+    assert site.manifest().documents.require((101, 1)).local_state is LocalState.DISCOVERED
+
+
+def test_an_extraction_cap_written_in_the_configuration_refuses_the_container(site: Site) -> None:
+    site.write_config(source="max_extracted_bytes = 8\n")
+    site.server.scenario.documents.append(itr_today())
+
+    assert site.cli("run") == 1
+
+    assert not (site.day_dir(TODAY) / "PETR").exists()
+    assert site.manifest().documents.require((102, 1)).local_state is LocalState.DISCOVERED
 
 
 # --- The process contract: real subprocesses, real exit codes. ---
