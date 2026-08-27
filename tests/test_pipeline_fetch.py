@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 import stat
@@ -18,8 +19,16 @@ from co_docs_watcher.errors import (
     TransientSourceError,
 )
 from co_docs_watcher.manifest.repo import FileRecord, Manifest
-from co_docs_watcher.models import FileRole, LocalState, SourceDocument
+from co_docs_watcher.models import (
+    DeliveredFile,
+    Delivery,
+    DeliveryKind,
+    FileRole,
+    LocalState,
+    SourceDocument,
+)
 from co_docs_watcher.pipeline.fetch import (
+    _MAX_CONTAINER_NAMES,
     MAX_ATTEMPTS,
     archive_path_of,
     category_component,
@@ -460,3 +469,96 @@ def test_a_caller_that_names_no_modes_gets_the_declared_defaults(
     placed = roots.day(TODAY) / "PETR" / "Fato-Relevante_160310_V01.pdf"
     assert mode_of(placed) == 0o644
     assert mode_of(placed.parent) == 0o755
+
+
+FOREIGN = b"%PDF-1.7\nsomebody else's delivery\n"
+
+
+def test_an_archive_that_cannot_be_written_does_not_cost_the_document_its_budget(
+    manifest: Manifest, roots: Roots, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A full disk fails every document in the queue the same way. Charged to the retry budget
+    # it would take three runs to turn the whole queue permanently ``failed``, and nothing
+    # brings a failed document back.
+    document = make_document()
+    queue(manifest, document)
+
+    def unwritable(*args: object, **kwargs: object) -> None:
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(os, "replace", unwritable)
+
+    outcome = run(manifest, roots, FakeSource())
+
+    assert outcome.retrying == (document.identity,)
+    assert manifest.documents.require(document.identity).local_state is LocalState.DISCOVERED
+    assert manifest.attempts.failures(document.identity) == 0
+
+
+def test_a_category_folder_that_is_not_this_documents_is_never_overwritten(
+    manifest: Manifest, roots: Roots
+) -> None:
+    # Every name this document would take is occupied by something that does not carry its
+    # imposed PDF, so none of them is recognizably ours and none of them may be deleted.
+    document = make_document(category=ITR)
+    company = roots.day(TODAY) / "PETR"
+    occupied = ("ITR", "ITR_V01", f"ITR_V01_{document.document_id}")
+    for name in occupied:
+        (company / name).mkdir(parents=True)
+        (company / name / "somebody-elses.pdf").write_bytes(FOREIGN)
+    queue(manifest, document)
+
+    run(manifest, roots, FakeSource(recipes={document.identity: zip_delivery}))
+
+    for name in occupied:
+        assert (company / name / "somebody-elses.pdf").read_bytes() == FOREIGN
+    landed = company / f"ITR_V01_{document.document_id}_2"
+    assert (landed / f"ITR_{document.document_id}_V01.pdf").read_bytes() == PDF_BYTES
+
+
+def test_a_delivery_is_refused_rather_than_placed_over_an_unrecognizable_folder(
+    manifest: Manifest, roots: Roots
+) -> None:
+    # The fuse: a day holding this many unrecognizable containers of one category for one
+    # company is a defect to look at, not a folder to add.
+    document = make_document(category=ITR)
+    company = roots.day(TODAY) / "PETR"
+    stem = f"ITR_V01_{document.document_id}"
+    names = ["ITR", "ITR_V01", stem]
+    names += [f"{stem}_{ordinal}" for ordinal in range(2, _MAX_CONTAINER_NAMES + 1)]
+    for name in names:
+        (company / name).mkdir(parents=True)
+        (company / name / "somebody-elses.pdf").write_bytes(FOREIGN)
+    queue(manifest, document)
+
+    outcome = run(manifest, roots, FakeSource(recipes={document.identity: zip_delivery}))
+
+    assert outcome.retrying == (document.identity,)
+    assert sorted(path.name for path in company.iterdir()) == sorted(names)
+    for name in names:
+        assert (company / name / "somebody-elses.pdf").read_bytes() == FOREIGN
+
+
+def test_a_staged_file_with_no_extension_is_refused_instead_of_being_called_a_pdf(
+    manifest: Manifest, roots: Roots
+) -> None:
+    # The extension is decided by the content, at the boundary. Inventing one here would be
+    # the single place in the archive where a name was guessed.
+    document = make_document()
+    queue(manifest, document)
+
+    def nameless(candidate: SourceDocument, into: Path) -> Delivery:
+        into.mkdir(parents=True, exist_ok=True)
+        path = into / "document"
+        path.write_bytes(PDF_BYTES)
+        return Delivery(
+            document=candidate,
+            kind=DeliveryKind.PDF,
+            files=(DeliveredFile(path=path, role=FileRole.DOCUMENT, stable=True),),
+        )
+
+    outcome = run(manifest, roots, FakeSource(recipes={document.identity: nameless}))
+
+    assert outcome.retrying == (document.identity,)
+    assert list((roots.day(TODAY) / "PETR").iterdir()) == []
+    assert manifest.attempts.failures(document.identity) == 1

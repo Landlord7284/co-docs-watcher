@@ -87,6 +87,11 @@ _CHUNK = 1024 * 1024
 
 _NON_ALPHANUMERIC = re.compile(r"[^0-9A-Za-z]+")
 
+#: How far the category subfolder may be disambiguated before a delivery is refused. Reaching
+#: it means a day holds this many unrecognizable containers of one category for one company,
+#: which is a defect to be looked at rather than a folder to add.
+_MAX_CONTAINER_NAMES = 50
+
 
 @dataclass(frozen=True, slots=True)
 class FetchOutcome:
@@ -156,6 +161,15 @@ def fetch_pending(
             # how a document that was only ever unlucky ends up permanently failed.
             manifest.documents.transition(identity, LocalState.DISCOVERED)
             raise
+        except OSError as error:
+            # The archive, not the document: mkdir, chmod, replace, stat and the hash all fail
+            # for a full disk or a root nobody can write to, and every document in the queue
+            # fails the same way. Charging that to the retry budget is how one bad afternoon
+            # turns the whole queue permanently ``failed`` — and nothing brings a failed
+            # document back to the queue.
+            logger.error("document %s could not be written to the archive: %s", identity, error)
+            manifest.documents.transition(identity, LocalState.DISCOVERED)
+            retrying.append(identity)
         except SourceContractError as error:
             # Not retryable and not the document's fault: a signature this build cannot store
             # will not become storable on the next attempt. Loud, and the batch continues.
@@ -163,7 +177,7 @@ def fetch_pending(
             manifest.attempts.record(identity, AttemptOutcome.FAILURE, str(error))
             manifest.documents.transition(identity, LocalState.FAILED)
             failed.append(identity)
-        except (DocumentError, TransientSourceError, OSError) as error:
+        except (DocumentError, TransientSourceError) as error:
             manifest.attempts.record(identity, AttemptOutcome.FAILURE, str(error))
             exhausted = manifest.attempts.failures(identity) >= max_attempts
             manifest.documents.transition(
@@ -196,7 +210,7 @@ def category_component(category: str) -> str:
     Case is the source's: this is a label a human reads, not an identifier to compare.
     """
     head = category.split(" - ", 1)[0]
-    words = [word for word in _split_words(strip_accents(head)) if word]
+    words = _split_words(strip_accents(head))
     if not words:
         return _UNNAMED_CATEGORY
     kept: list[str] = []
@@ -286,7 +300,15 @@ def _place_document(
 ) -> list[tuple[DeliveredFile, Path]]:
     """A standalone filing: one file, one ``rename``, the imposed name."""
     delivered = delivery.files[0]
-    target = company_root / document_file_name(delivery.document, delivered.path.suffix or ".pdf")
+    extension = delivered.path.suffix
+    if not extension:
+        # The extension is decided by the content, at the boundary, and a name invented here
+        # would be the one place in the archive where it was guessed instead.
+        raise DocumentError(
+            f"document {delivery.document.identity}: the staged file {delivered.path.name!r} "
+            "carries no extension, and the archive name may not invent one"
+        )
+    target = company_root / document_file_name(delivery.document, extension)
     stamp_file(delivered.path, modes)
     os.replace(delivered.path, target)
     return [(delivered, target)]
@@ -307,7 +329,9 @@ def _place_container(
     stamp_tree(staging, modes)
     target_dir = _free_directory(company_root, delivery)
     if target_dir.exists():
-        # Ours, from a run that placed the delivery and died before recording it.
+        # Ours, from a run that placed the delivery and died before recording it:
+        # ``_free_directory`` never hands back a directory that is not recognizably this
+        # document's, which is what makes deleting one here safe.
         shutil.rmtree(target_dir)
     os.replace(staging, target_dir)
     return [(delivered, target_dir / path.relative_to(staging)) for delivered, path in staged]
@@ -336,21 +360,32 @@ def _impose_generated_names(
 def _free_directory(company_root: Path, delivery: Delivery) -> Path:
     """The category subfolder, disambiguated when the day already holds one of that category.
 
-    A directory that already exists is only reused when it is *this* document's — recognized by
-    the imposed PDF name inside it, which is the whole reason identity lives in the file name
-    and not in the directory. A container with no generated copy cannot be recognized that way
-    and always takes the next name, which is a duplicate folder rather than an overwrite.
+    A directory that already exists is only ever handed back when it is *this* document's —
+    recognized by the imposed PDF name inside it, which is the whole reason identity lives in
+    the file name and not in the directory. That is the guarantee the caller deletes on: every
+    other name is either free or skipped. A container with no generated copy cannot be
+    recognized that way and always takes the next name, which is a duplicate folder rather than
+    an overwrite.
+
+    When every name is taken by something unrecognizable the delivery is refused. Placing it
+    would mean deleting a directory nobody proved was ours, and a document that failed to land
+    is recoverable in a way a directory that was overwritten is not.
     """
     document = delivery.document
     base = category_component(document.category)
     version = version_component(document.version)
-    candidates = (base, f"{base}_{version}", f"{base}_{version}_{document.document_id}")
     imposed = document_file_name(document, ".pdf")
+    stem = f"{base}_{version}_{document.document_id}"
+    candidates = [base, f"{base}_{version}", stem]
+    candidates += [f"{stem}_{ordinal}" for ordinal in range(2, _MAX_CONTAINER_NAMES + 1)]
     for name in candidates:
         candidate = company_root / name
         if not candidate.exists() or (candidate / imposed).exists():
             return candidate
-    return company_root / candidates[-1]
+    raise DocumentError(
+        f"document {document.identity}: {company_root} already holds {len(candidates)} "
+        f"directories named after {base!r} and none of them is this document's"
+    )
 
 
 def _prefix_for(document: SourceDocument, prefixes: dict[str, str]) -> str:
@@ -381,4 +416,10 @@ def sha256_of(path: Path) -> str:
 
 
 def _discard(staging: Path) -> None:
-    shutil.rmtree(staging, ignore_errors=True)
+    """Remove a staging tree. What survives is reported: ``.tmp/`` that only grows is a defect."""
+    try:
+        shutil.rmtree(staging)
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        logger.warning("staging debris at %s could not be removed: %s", staging, error)
