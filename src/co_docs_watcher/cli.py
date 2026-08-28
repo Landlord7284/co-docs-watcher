@@ -201,6 +201,7 @@ def _cmd_doctor(config: Config, args: argparse.Namespace) -> ExitCode:
     findings.append(_process_zone_finding(config))
     for finding in _window_findings(config):
         findings.append((True, finding))
+    findings.append((True, f"reading copies: {_reading_copy_finding(config)}"))
 
     watched: tuple[WatchedCompany, ...] | None = None
     try:
@@ -236,6 +237,18 @@ def _cmd_doctor(config: Config, args: argparse.Namespace) -> ExitCode:
     if all(good for good, _ in findings):
         return ExitCode.CLEAN
     return ExitCode.PARTIAL_FAILURE
+
+
+def _reading_copy_finding(config: Config) -> str:
+    """Whether a run will ask the source to render the PDF an FRE container does not carry.
+
+    Printed either way. A line that appeared only when the setting was on would turn "this
+    archive files FREs as XML" into something nobody was told, and the first time it is
+    noticed is a folder of markup somebody expected to be able to read.
+    """
+    if not config.fre_reading_pdf:
+        return "off (an FRE is archived as the XML the container carries)"
+    return "on for FRE (5 extra requests per document; source.fre_reading_pdf)"
 
 
 def _window_findings(config: Config) -> list[str]:

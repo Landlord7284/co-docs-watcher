@@ -482,3 +482,19 @@ def test_status_says_nothing_about_pending_when_nothing_is_pending(
 
     assert cli.main(["--config", str(config_file), "status"]) == 0
     assert "pending" not in capsys.readouterr().out
+
+
+def test_doctor_says_what_an_fre_will_be_archived_as(
+    config_file: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Printed either way: silence about it reads as "there is nothing to know here", and
+    what nobody was told is that this archive files a Formulário de Referência as markup."""
+    assert _doctor(config_file, monkeypatch) == 0
+    assert "reading copies: off" in capsys.readouterr().out
+
+    config_file.write_text(
+        config_file.read_text(encoding="utf-8") + "\n[source]\nfre_reading_pdf = true\n",
+        encoding="utf-8",
+    )
+    assert _doctor(config_file, monkeypatch) == 0
+    assert "reading copies: on for FRE" in capsys.readouterr().out

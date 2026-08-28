@@ -10,7 +10,12 @@ from pathlib import Path
 
 import pytest
 
-from co_docs_watcher.errors import DocumentError, SourceContractError, TransientSourceError
+from co_docs_watcher.errors import (
+    CaptchaRequiredError,
+    DocumentError,
+    SourceContractError,
+    TransientSourceError,
+)
 from co_docs_watcher.models import (
     DeliveryKind,
     FileRole,
@@ -20,6 +25,7 @@ from co_docs_watcher.models import (
 from co_docs_watcher.rad import RadSource
 from co_docs_watcher.rad.download import fetch
 from co_docs_watcher.source import Source
+from tests.rad import generator_control, padded_pdf, section_tree, viewer_page
 
 PDF = b"%PDF-1.6 fake body"
 
@@ -496,3 +502,174 @@ def test_the_adapter_satisfies_the_source_protocol(tmp_path: Path) -> None:
 
     delivery = source.download(document(), staged(tmp_path))
     assert delivery.kind is DeliveryKind.PDF
+
+
+# --- The reading copy a container does not carry. ---
+
+FRE_XML = "008656FRE31-12-2026v3.xml"
+FRE_REGISTRATION = "FormularioCadastral.xml"
+READING_PDF = b"%PDF-1.4\nreading copy\n%%EOF"
+
+
+def fre_document(**overrides: object) -> SourceDocument:
+    """The measured shape of an FRE delivery: two XMLs and nothing a person reads."""
+    return document(
+        document_id=161120,
+        version=3,
+        protocol="008656FRE202620260300161120-72",
+        cvm_code="008656",
+        legal_name="METALURGICA GERDAU S.A.",
+        category="FRE - Formulário de Referência",
+        **overrides,
+    )
+
+
+def fre_package(*extra: tuple[str, bytes]) -> bytes:
+    return build_zip(
+        (FRE_XML, b"<?xml version='1.0'?><DocumentoFRE><Conta/></DocumentoFRE>"),
+        (FRE_REGISTRATION, b"<?xml version='1.0'?><FormularioCadastral/>"),
+        *extra,
+    )
+
+
+class ReadingClient(FakeClient):
+    """A client that also answers the chain — or refuses it in a stated way."""
+
+    def __init__(self, content: bytes, *, refusal: Exception | None = None) -> None:
+        super().__init__(content)
+        self.refusal = refusal
+        self.walked = 0
+
+    def open_page(
+        self, path: str, params: dict[str, str], *, referer: str | None
+    ) -> tuple[str, str]:
+        self.walked += 1
+        if self.refusal is not None:
+            raise self.refusal
+        return viewer_page(), f"https://example/{path}"
+
+    def call_page_method(self, path: str, payload: dict[str, object], *, referer: str) -> object:
+        if path.endswith("CarregarMenuRelatorios"):
+            return section_tree("1000")
+        return generator_control(padded_pdf(READING_PDF))
+
+
+def test_an_fre_delivery_gains_the_reading_copy_the_container_lacks(tmp_path: Path) -> None:
+    client = ReadingClient(fre_package())
+
+    delivery = fetch(
+        client,  # type: ignore[arg-type]
+        fre_document(),
+        staged(tmp_path),
+        want_reading_pdf=True,
+    )
+
+    assert delivery.kind is DeliveryKind.ZIP
+    roles = [file.role for file in delivery.files]
+    assert roles == [FileRole.MEMBER, FileRole.MEMBER, FileRole.GENERATED_PDF]
+    generated = delivery.files[-1]
+    # Generated on demand and named after the instant it was generated: its hash repeats for
+    # nothing, which is what ``stable`` says and what keeps the manifest from claiming it.
+    assert not generated.stable
+    assert generated.path.read_bytes() == READING_PDF
+
+
+def test_the_reading_copy_is_not_asked_for_unless_the_operator_asked(tmp_path: Path) -> None:
+    client = ReadingClient(fre_package())
+
+    delivery = fetch(client, fre_document(), staged(tmp_path))  # type: ignore[arg-type]
+
+    assert client.walked == 0
+    assert len(delivery.files) == 2
+
+
+def test_a_container_that_already_carries_a_reading_copy_is_left_alone(tmp_path: Path) -> None:
+    client = ReadingClient(fre_package((GENERATED_PDF, PDF)))
+
+    delivery = fetch(
+        client,  # type: ignore[arg-type]
+        fre_document(),
+        staged(tmp_path),
+        want_reading_pdf=True,
+    )
+
+    assert client.walked == 0
+    assert [file.path.name for file in delivery.files] == [
+        FRE_XML,
+        FRE_REGISTRATION,
+        GENERATED_PDF,
+    ]
+
+
+def test_a_category_with_no_known_page_is_never_walked(tmp_path: Path) -> None:
+    client = ReadingClient(build_zip((STABLE_XML, b"<?xml version='1.0'?><DocumentoITR/>")))
+
+    delivery = fetch(
+        client,  # type: ignore[arg-type]
+        document(),
+        staged(tmp_path),
+        want_reading_pdf=True,
+    )
+
+    assert client.walked == 0
+    assert len(delivery.files) == 1
+
+
+def test_a_chain_that_fails_costs_the_reading_copy_and_never_the_filing(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    client = ReadingClient(
+        fre_package(), refusal=TransientSourceError("the generator is having a day")
+    )
+
+    with caplog.at_level(logging.WARNING):
+        delivery = fetch(
+            client,  # type: ignore[arg-type]
+            fre_document(),
+            staged(tmp_path),
+            want_reading_pdf=True,
+        )
+
+    assert [file.path.name for file in delivery.files] == [FRE_XML, FRE_REGISTRATION]
+    assert "having a day" in caplog.text
+
+
+def test_divergence_in_the_chain_is_reported_at_its_own_severity(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Flattened to a warning, a contract that moved becomes routine and stops being read."""
+    client = ReadingClient(
+        fre_package(), refusal=SourceContractError("the generator answered something new")
+    )
+
+    with caplog.at_level(logging.DEBUG):
+        delivery = fetch(
+            client,  # type: ignore[arg-type]
+            fre_document(),
+            staged(tmp_path),
+            want_reading_pdf=True,
+        )
+
+    assert len(delivery.files) == 2
+    assert [record.levelno for record in caplog.records] == [logging.CRITICAL]
+
+
+def test_a_captcha_demand_in_the_chain_is_never_swallowed(tmp_path: Path) -> None:
+    client = ReadingClient(fre_package(), refusal=CaptchaRequiredError("reduce the frequency"))
+
+    with pytest.raises(CaptchaRequiredError):
+        fetch(
+            client,  # type: ignore[arg-type]
+            fre_document(),
+            staged(tmp_path),
+            want_reading_pdf=True,
+        )
+
+
+def test_the_adapter_carries_the_operators_answer_down_to_the_boundary(tmp_path: Path) -> None:
+    client = ReadingClient(fre_package())
+
+    source = RadSource(client, reading_pdf=True)  # type: ignore[arg-type]
+    delivery = source.download(fre_document(), staged(tmp_path))
+
+    assert delivery.files[-1].role is FileRole.GENERATED_PDF

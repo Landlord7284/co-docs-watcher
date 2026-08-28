@@ -15,6 +15,7 @@ from co_docs_watcher.config import (
     DEFAULT_BACKOFF_INITIAL,
     DEFAULT_DIRECTORY_MODE,
     DEFAULT_FILE_MODE,
+    DEFAULT_FRE_READING_PDF,
     DEFAULT_LOG_BACKUPS,
     DEFAULT_LOG_MAX_BYTES,
     DEFAULT_MAX_DOCUMENT_ATTEMPTS,
@@ -119,6 +120,7 @@ def test_documented_defaults_apply_when_the_file_omits_them(tmp_path: Path) -> N
     assert config.backoff_initial == DEFAULT_BACKOFF_INITIAL
     assert config.backoff_factor == DEFAULT_BACKOFF_FACTOR
     assert config.max_document_attempts == DEFAULT_MAX_DOCUMENT_ATTEMPTS
+    assert config.fre_reading_pdf is DEFAULT_FRE_READING_PDF is False
     assert config.registry_max_age_days == DEFAULT_REGISTRY_MAX_AGE_DAYS
     assert config.discovery_days == DEFAULT_RETENTION_DAYS
     assert config.monitor_days == DEFAULT_MONITOR_DAYS
@@ -454,3 +456,17 @@ def test_the_timezone_is_resolved_once_at_load(tmp_path: Path) -> None:
     config = load_config(env={}, cwd=tmp_path, home=tmp_path)
     # A ZoneInfo instance, not a string to be re-resolved later at every call site.
     assert config.timezone.key == "America/Sao_Paulo"
+
+
+def test_the_reading_copy_is_asked_for_only_when_the_file_asks_for_it(tmp_path: Path) -> None:
+    path = write(tmp_path / "config.toml", VALID + "\n[source]\nfre_reading_pdf = true\n")
+
+    assert load_config(path).fre_reading_pdf is True
+
+
+def test_a_setting_that_merely_reads_like_a_boolean_is_refused(tmp_path: Path) -> None:
+    """``"false"`` is a non-empty string, and coercing it would turn the setting on."""
+    path = write(tmp_path / "config.toml", VALID + '\n[source]\nfre_reading_pdf = "false"\n')
+
+    with pytest.raises(ConfigError, match="must be true or false"):
+        load_config(path)

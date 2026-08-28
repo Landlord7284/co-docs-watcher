@@ -112,6 +112,12 @@ backoff_factor = 4.0
 # sweep sees it again. A different budget from retries, which is what one request is worth.
 max_document_attempts = 3
 
+# Whether a run asks the source to render the reading PDF an FRE container does not carry.
+# Off because it is a cost and not a correction: five extra requests and about half a minute
+# of the source's work per document. The filing is archived either way — the two XMLs are the
+# document — and what this buys is a PDF beside them.
+fre_reading_pdf = false
+
 # Overridden only to point at a test server or a mirror.
 base_url = "https://www.rad.cvm.gov.br/ENETWeb/"
 

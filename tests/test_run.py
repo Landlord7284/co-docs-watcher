@@ -105,6 +105,7 @@ def config(tmp_path: Path) -> Config:
         backoff_initial=0.01,
         backoff_factor=DEFAULT_BACKOFF_FACTOR,
         max_document_attempts=DEFAULT_MAX_DOCUMENT_ATTEMPTS,
+        fre_reading_pdf=False,
         registry_max_age_days=7,
         source_base_url="http://localhost:9/",
         prefix_overrides={},

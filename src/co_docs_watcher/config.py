@@ -145,6 +145,13 @@ LOG_FILE_NAME = "co-docs-watcher.log"
 DEFAULT_LOG_MAX_BYTES = 5 * 1024 * 1024
 DEFAULT_LOG_BACKUPS = 5
 
+#: Whether a run asks the source to generate the reading copy an FRE container does not
+#: carry. Off, because it is a cost rather than a correction: five more requests and about
+#: half a minute of the source's work per document, against a backend measured falling over
+#: after about a dozen calls in a few minutes. The filing is archived either way — what the
+#: setting buys is a PDF beside the two XMLs — so the operator who wants it says so.
+DEFAULT_FRE_READING_PDF = False
+
 #: Folder-name overrides, keyed by CVM code. The keys are data, not schema, so this section is
 #: the one place where an unknown key is not a typo.
 PREFIX_OVERRIDES_SECTION = "prefix_overrides"
@@ -167,6 +174,7 @@ _SCHEMA: dict[str, set[str]] = {
         "backoff_initial",
         "backoff_factor",
         "max_document_attempts",
+        "fre_reading_pdf",
         "base_url",
     },
 }
@@ -210,6 +218,7 @@ class Config:
     backoff_initial: float
     backoff_factor: float
     max_document_attempts: int
+    fre_reading_pdf: bool
     registry_max_age_days: int
     source_base_url: str
     prefix_overrides: Mapping[str, str]
@@ -341,6 +350,7 @@ def load_config(
             backoff_initial=DEFAULT_BACKOFF_INITIAL,
             backoff_factor=DEFAULT_BACKOFF_FACTOR,
             max_document_attempts=DEFAULT_MAX_DOCUMENT_ATTEMPTS,
+            fre_reading_pdf=DEFAULT_FRE_READING_PDF,
             registry_max_age_days=DEFAULT_REGISTRY_MAX_AGE_DAYS,
             source_base_url=DEFAULT_SOURCE_BASE_URL,
             prefix_overrides={},
@@ -439,6 +449,9 @@ def _from_file(path: Path) -> Config:
             DEFAULT_MAX_DOCUMENT_ATTEMPTS,
             where="source",
             path=path,
+        ),
+        fre_reading_pdf=_boolean(
+            source, "fre_reading_pdf", DEFAULT_FRE_READING_PDF, where="source", path=path
         ),
         registry_max_age_days=_positive_int(
             registry,
@@ -612,6 +625,23 @@ def _mode(
     if not 0 <= value <= MAX_MODE:
         raise ConfigError(
             f"{path}: [{where}] {key} must be between 0o0 and {MAX_MODE:#o} (got {value:#o})"
+        )
+    return value
+
+
+def _boolean(
+    section: Mapping[str, Any], key: str, default: bool, *, where: str, path: Path
+) -> bool:
+    """A TOML boolean, and never a value that merely reads like one.
+
+    ``"true"`` and ``1`` are refused rather than coerced: a string in a boolean's place is an
+    operator writing another format's syntax, and accepting it would let ``"false"`` — a
+    non-empty string, and so true — turn a setting off by turning it on.
+    """
+    value = section.get(key, default)
+    if not isinstance(value, bool):
+        raise ConfigError(
+            f"{path}: [{where}] {key} must be true or false, got {value!r}"
         )
     return value
 

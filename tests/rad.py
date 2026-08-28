@@ -9,6 +9,8 @@ exists, not to the wire the builders imagine.
 
 from __future__ import annotations
 
+import base64
+import json
 from typing import Any
 
 ROW_SEPARATOR = "$&&*"
@@ -126,3 +128,83 @@ RECORDED_ROWS = (
     RECORDED_INACTIVE,
     RECORDED_CANCELLED,
 )
+
+
+# --- The reading-copy chain: the pages and the three PageMethod answers. ---
+
+#: The generator's fixed answer buffer, measured 2026-08-28 on document 161120: the PDF
+#: occupies the front of it and the rest is padding. The figure here is small for the same
+#: reason the rest of these builders are small — what is reproduced is the shape.
+READING_BUFFER_BYTES = 512
+
+#: The hidden fields the viewer shell carries, with the measured spellings and the measured
+#: value of the switch that decides whether a captcha token is attached.
+VIEWER_FIELDS = {
+    "hdnNumeroSequencialDocumento": "161120",
+    "hdnCodigoTipoDocumento": "9",
+    "hdnCodigoCvm": "008656",
+    "hdnDescricaoDocumento": "FREWEB",
+    "hdnCodigoInstituicao": "1",
+    "hdnMensagem": None,
+    "hdnHash": "kt5vcM5SxCkAjIYoe3tAI83zAYt9AskbYXdjaaqyeI",
+    "hdnHabilitaCaptcha": "N",
+}
+
+
+def viewer_page(**overrides: str | None) -> str:
+    """The viewer shell, reduced to the hidden inputs the chain is built from.
+
+    Both attribute orders the page uses are reproduced — ``type`` first on some inputs and
+    ``name`` first on others — because the extraction must not depend on either, and a
+    builder that emits one shape would pin a parser that only handles that shape.
+    """
+    fields = {**VIEWER_FIELDS, **overrides}
+    inputs = []
+    for index, (name, value) in enumerate(fields.items()):
+        attribute = "" if value is None else f' value="{value}"'
+        if index % 2:
+            inputs.append(f'<input type="hidden" name="{name}" id="{name}"{attribute} />')
+        else:
+            inputs.append(f'<input name="{name}" type="hidden" id="{name}"{attribute} />')
+    return "<html><body><form>" + "".join(inputs) + "</form></body></html>"
+
+
+def section_tree(*identifiers: str) -> str:
+    """The menu answer: a JSON document delivered inside a JSON string, as jsTree takes it."""
+    children = [
+        {"id": identifier, "text": identifier, "children": []} for identifier in identifiers
+    ]
+    return json.dumps({"id": "0", "text": "Todos", "children": children})
+
+
+def padded_pdf(
+    body: bytes = b"%PDF-1.4\nreading copy\n%%EOF", *, buffer: int | None = None
+) -> bytes:
+    """A document followed by the padding that fills the generator's fixed buffer."""
+    size = READING_BUFFER_BYTES if buffer is None else buffer
+    return body + b"\n" + b"\x00" * (size - len(body) - 1)
+
+
+def generator_control(content: bytes | None, **overrides: Any) -> dict[str, Any]:
+    """One ``ControleGeracaoRelatorioPDF``, with the measured fields and nothing invented."""
+    control: dict[str, Any] = {
+        "__type": "Bovespa.Formularios.Shell.Entidades.ControleGeracaoRelatorioPDF_DOCX",
+        "NumeroSequencialDocumento": "161120",
+        "NomeArquivo": "161120_008656_28082026140851.pdf",
+        "ConteudoLido": None if content is None else base64.b64encode(content).decode(),
+        # Measured reporting the buffer rather than the document, and ``TamanhoTotal``
+        # measured reporting zero: neither is read, and both are here so a test that starts
+        # reading one fails.
+        "BytesLidos": READING_BUFFER_BYTES,
+        "TamanhoTotal": 0,
+        "Finalizado": True,
+        "Hash": VIEWER_FIELDS["hdnHash"],
+        "V2": False,
+        "MensagemErro": "",
+        "Erro": False,
+        "GerandoDocx": False,
+        "TipoGeracao": "",
+        "GeracaoDocxConcluida": False,
+    }
+    control.update(overrides)
+    return control

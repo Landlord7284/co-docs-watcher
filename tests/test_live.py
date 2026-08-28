@@ -6,7 +6,11 @@ Run explicitly with ``pytest -m live``. Never part of the default selection or o
 Discipline holds even here — *especially* here, because this suite talks to the real, fragile
 backend: at least five seconds between requests, a hard budget for the whole suite run
 (:data:`MAX_REQUESTS`), no retries, and a captcha demand stops the suite immediately instead
-of pressing on. The whole suite costs two listing requests plus three downloads.
+of pressing on. The whole suite costs two listing requests, three downloads and the five
+requests of one reading-copy chain — around eleven in all, which at the interval below is
+some three minutes of steady traffic against a backend measured falling over after about a
+dozen calls in a few minutes. That is close enough to the edge that running this suite is a
+deliberate act and never a habit.
 
 A failure in this file usually means the source moved, not that the code broke: the failure
 messages say so, and the fix is to update ``docs/fonte-rad.md`` with the newly observed
@@ -30,6 +34,7 @@ import pytest
 
 from co_docs_watcher.models import SourceDocument, SourceStatus
 from co_docs_watcher.rad.client import BASE_URL, RadClient, search_payload
+from co_docs_watcher.rad.reading_pdf import has_reading_page, reading_pdf
 from co_docs_watcher.rad.schema import parse_listing
 
 pytestmark = pytest.mark.live
@@ -39,10 +44,11 @@ TIMEZONE = ZoneInfo("America/Sao_Paulo")
 #: Seconds between any two requests this suite issues, transport-level pacing included.
 MIN_INTERVAL = 15.0
 
-#: The hard budget the client is given: the suite's 3 downloads, with no slack for retries
-#: — a failed request is a finding, not something to insist on. The two listing fixtures are
-#: sent outside the client, so they assert on the envelope rather than on what it digested.
-MAX_REQUESTS = 6
+#: The hard budget the client is given: the suite's 3 downloads and the 5 hops of one
+#: reading-copy chain, with no slack for retries — a failed request is a finding, not
+#: something to insist on. The two listing fixtures are sent outside the client, so they
+#: assert on the envelope rather than on what it digested.
+MAX_REQUESTS = 8 + 3
 
 ROW_SEPARATOR = "$&&*"
 FIELD_SEPARATOR = "$&"
@@ -338,3 +344,67 @@ def test_a_superseded_row_keeps_its_original_delivery_date(
             f"document {document.identity} ({document.status}) was delivered on "
             f"{document.delivery_date} and its active successor no later; {DIVERGED}"
         )
+
+
+def test_an_fre_container_carries_no_reading_copy(
+    recent_week: list[SourceDocument], client: RadClient
+) -> None:
+    """Last measured 2026-08-28, on Metalúrgica Gerdau's v3 and SLC Agrícola's v4: an FRE
+    package holds the structured form and ``FormularioCadastral.xml``, and nothing else.
+
+    This is the fact the reading-copy chain exists for. If a generated PDF ever appears in
+    here, the chain becomes five requests spent on something the download already delivered.
+    """
+    document = _an_fre(recent_week)
+    content = client.fetch_document(document.document_id, document.version, document.protocol)
+    assert content.startswith(b"PK\x03\x04"), (
+        f"FRE {document.identity} did not arrive as a container (got {content[:16]!r}); "
+        f"{DIVERGED}"
+    )
+
+    generated = re.compile(r"^\d+_\d+_\d+\.pdf$", re.IGNORECASE)
+    with zipfile.ZipFile(io.BytesIO(content)) as archive:
+        names = archive.namelist()
+    assert not [name for name in names if generated.match(name)], (
+        f"the FRE container of {document.identity} now carries a generated reading PDF "
+        f"({names}), so the chain is no longer what it is for; {DIVERGED}"
+    )
+
+
+def test_the_reading_copy_chain_answers_a_padded_buffer_holding_a_pdf(
+    recent_week: list[SourceDocument], client: RadClient
+) -> None:
+    """Last measured 2026-08-28 on document 161120: five requests, ~38 s, and a fixed 16 MiB
+    buffer whose PDF ends at ``%%EOF`` with NUL padding behind it.
+
+    What is asserted is the shape and not the size: the buffer is the source's to change,
+    and the trimming rule is what has to keep holding. ``reading_pdf`` refuses anything that
+    is not a PDF, carries no end marker, or trails something other than padding, so reaching
+    the assertions below is most of the measurement.
+    """
+    document = _an_fre(recent_week)
+    content = reading_pdf(client, document)
+
+    assert content.startswith(b"%PDF-"), f"the reading copy is not a PDF; {DIVERGED}"
+    assert content.rstrip().endswith(b"%%EOF"), (
+        f"the reading copy was trimmed to something that is not the end of a PDF; {DIVERGED}"
+    )
+
+
+def _an_fre(documents: list[SourceDocument]) -> SourceDocument:
+    """An active FRE out of the week, smallest id first, or a skip.
+
+    A skipped measurement is honest and a fabricated one is not: an FRE is filed when a
+    company files it, and a week without one says nothing about the chain.
+    """
+    candidates = sorted(
+        (
+            document
+            for document in documents
+            if document.status is SourceStatus.ACTIVE and has_reading_page(document)
+        ),
+        key=lambda document: document.document_id,
+    )
+    if not candidates:
+        pytest.skip("no active FRE was delivered in the measured week")
+    return candidates[0]

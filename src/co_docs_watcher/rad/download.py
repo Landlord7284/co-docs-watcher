@@ -60,6 +60,7 @@ from co_docs_watcher.models import (
     SourceDocument,
 )
 from co_docs_watcher.rad.client import RadClient
+from co_docs_watcher.rad.reading_pdf import has_reading_page, reading_pdf
 
 __all__ = ["MAX_EXTRACTED_BYTES", "fetch"]
 
@@ -120,12 +121,17 @@ def fetch(
     into: Path,
     *,
     max_extracted_bytes: int = MAX_EXTRACTED_BYTES,
+    want_reading_pdf: bool = False,
 ) -> Delivery:
     """Download one document into the staging directory ``into`` and describe what landed.
 
     The persisted ``protocol`` is a required download argument — this is why discovery
     stores it. Naming and atomic placement in the archive belong to the caller; nothing is
     written outside ``into``.
+
+    ``want_reading_pdf`` is the operator's answer to a cost, not a switch between two correct
+    behaviours: a container that carries no reading copy can be given one, at five more
+    requests and about half a minute of the source's work per document.
     """
     content = client.fetch_document(document.document_id, document.version, document.protocol)
     into.mkdir(parents=True, exist_ok=True)
@@ -133,7 +139,13 @@ def fetch(
     if content.startswith(_MAGIC_PDF):
         return _deliver_pdf(document, content, into)
     if content.startswith((_MAGIC_ZIP, _MAGIC_ZIP_EMPTY)):
-        return _deliver_zip(document, content, into, max_extracted_bytes=max_extracted_bytes)
+        return _deliver_zip(
+            document,
+            content,
+            into,
+            max_extracted_bytes=max_extracted_bytes,
+            client=client if want_reading_pdf else None,
+        )
     if _looks_like_html(content):
         raise TransientSourceError(
             f"document ({document.document_id}, {document.version}): the source answered an "
@@ -154,7 +166,12 @@ def _deliver_pdf(document: SourceDocument, content: bytes, into: Path) -> Delive
 
 
 def _deliver_zip(
-    document: SourceDocument, content: bytes, into: Path, *, max_extracted_bytes: int
+    document: SourceDocument,
+    content: bytes,
+    into: Path,
+    *,
+    max_extracted_bytes: int,
+    client: RadClient | None = None,
 ) -> Delivery:
     """A container: opened, cleared whole, then either unwrapped or laid out as it stands.
 
@@ -177,7 +194,50 @@ def _deliver_zip(
         if filing is not None:
             return _deliver_filing(document, filing, into)
         files = _extract_members(archive, members, into, label)
+    files += _reading_copy(client, document, files, into, label)
     return Delivery(document=document, kind=DeliveryKind.ZIP, files=files)
+
+
+def _reading_copy(
+    client: RadClient | None,
+    document: SourceDocument,
+    files: tuple[DeliveredFile, ...],
+    into: Path,
+    label: str,
+) -> tuple[DeliveredFile, ...]:
+    """The reading copy this container does not carry, when it is wanted and reachable.
+
+    Three ways of answering nothing, and they are different questions rather than degrees of
+    the same one: the operator did not ask for it, the container already has one, or this
+    build knows no page that generates one for this category.
+
+    A chain that fails costs the reading copy and never the delivery. The two XMLs *are* the
+    filing and the PDF is a convenience, so holding the delivery back over the convenience
+    would trade the archive's only copy of the document for the ease of reading it. The
+    failure is logged at its own severity rather than flattened to a warning — a contract
+    that moved is still news, and it is the kind that stops being reported the moment it is
+    written down as routine. A captcha demand is not caught at all: it is terminal, it ends
+    the run with exit code 4, and insisting is what makes the source's answer worse.
+    """
+    if client is None or not has_reading_page(document):
+        return ()
+    if any(file.role is FileRole.GENERATED_PDF for file in files):
+        return ()
+    try:
+        content = reading_pdf(client, document)
+    except (DocumentError, TransientSourceError, SourceContractError) as error:
+        logger.log(
+            error.severity,
+            "%s: the reading copy could not be generated (%s); the delivery is archived "
+            "with the %d file(s) the container carried",
+            label,
+            error,
+            len(files),
+        )
+        return ()
+    path = into / "reading.pdf"
+    path.write_bytes(content)
+    return (DeliveredFile(path=path, role=FileRole.GENERATED_PDF, stable=False),)
 
 
 def _cleared_members(
