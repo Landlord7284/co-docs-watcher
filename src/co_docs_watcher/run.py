@@ -290,6 +290,7 @@ def _observe_and_fetch(
             staging_root=config.staging_root,
             watched=watched,
             max_attempts=config.max_document_attempts,
+            modes=config.archive_modes,
         )
     except RequestBudgetExceededError as error:
         # The queue was already put back in order by the fetch step itself.

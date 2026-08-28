@@ -9,7 +9,8 @@ happens after the source refuses to keep answering.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+import stat
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -132,6 +133,26 @@ def test_a_clean_run_archives_indexes_and_reports_clean(config: Config) -> None:
     manifest = manifest_of(config)
     assert manifest.documents.require(document.identity).local_state is LocalState.AVAILABLE
     assert manifest.state.watermark() == TODAY
+
+
+def test_the_run_hands_the_configured_modes_to_the_fetch_step(config: Config) -> None:
+    """The ``[files]`` modes reach the archive itself, not only the inbox indexes.
+
+    Non-default modes make the test umask-independent: a fetch step left on the declared
+    defaults lands 0o644/0o755 whatever the umask, and the assertion catches it.
+    """
+    stricter = replace(config, directory_mode=0o750, file_mode=0o640)
+    document = make_document(delivery_date=TODAY)
+    run(stricter, FakeSource([document]))
+
+    def mode_of(path: Path) -> int:
+        return stat.S_IMODE(path.stat().st_mode)
+
+    company_root = stricter.documents_root / TODAY.isoformat() / "PETR"
+    assert mode_of(company_root / "Fato-Relevante_160310_V01.pdf") == 0o640
+    assert mode_of(company_root) == 0o750
+    assert mode_of(company_root.parent) == 0o750
+    assert mode_of(stricter.inbox_root / f"{TODAY.isoformat()}.md") == 0o640
 
 
 def test_the_sweep_covers_the_whole_window_never_an_increment(config: Config) -> None:
