@@ -24,18 +24,16 @@
 # data_root is private — watch list, SQLite manifest, lock, FCA registry cache — and must
 # live on a filesystem local to the process: SQLite locking over SMB/NFS is unreliable.
 data_root = "var/data"
+
 # documents_root is the shareable archive, organized by delivery date, and holds .tmp/ so
 # that placing a downloaded file is an atomic rename within a single filesystem.
 documents_root = "var/documents"
-# logs_root holds the log file. A root of its own because it is neither private state the
-# watcher reads back nor part of what people are given, and it is mounted separately.
+
+# logs_root holds the log file. 
 logs_root = "var/logs"
 
 [logging]
-# Every line the watcher prints also goes to logs_root/co-docs-watcher.log, whatever
-# supervises the process. The streams are read while a run happens; the file answers the
-# question asked afterwards, when the one warning has scrolled away.
-# Bytes the file reaches before it rotates, and how many rotations are kept.
+# Every line the watcher prints also goes to logs_root/co-docs-watcher.log.
 max_bytes = 5242880
 backups = 5
 
@@ -45,11 +43,9 @@ backups = 5
 days = 7
 
 [discovery]
-# Dates swept by `run`, ending today. Follows retention.days when unset; may be narrower,
-# never wider — a sweep wider than retention re-downloads what purge deletes. Only a sweep
-# covering the whole retention window advances the last-completed-sweep watermark, so
-# narrowing this makes every run warn about the days it stopped observing.
+# Dates swept by `run`, ending today. Follows retention.days when unset.
 days = 7
+
 # Dates swept by `run --monitor`, the frequent narrow profile. A superseded or cancelled
 # row keeps its original delivery date at the source, so supersessions of older documents
 # are only visible to the full sweep: schedule a daily `run` beside the monitor.
@@ -65,9 +61,7 @@ directory_mode = 0o755
 file_mode = 0o644
 
 [registry]
-# Days a cached FCA package is used before it is downloaded again. The registry only moves
-# when a company files a registration form, so a week-old snapshot names companies exactly
-# as today's does.
+# Days a cached FCA package is used before it is downloaded again.
 max_age_days = 7
 
 [source]
@@ -78,21 +72,26 @@ max_age_days = 7
 # This is the project's only declaration of a zone: the container exports TZ from it, so the
 # hours its schedule fires in are read here too, and cannot drift from the dates below.
 timezone = "America/Sao_Paulo"
+
 # Seconds between requests. The backend behind the page drops under load; this is a floor,
 # not a target.
 min_request_interval = 15.0
+
 # Safety fuse: a single run never issues more requests than this, whatever it has left to do.
 max_requests_per_run = 200
+
 # What one answer from the source may weigh. A full market day measured ~500 KB and the
 # largest measured delivery is an 8.6 MB package, so both sit far past any real answer: they
 # bound what a malfunction can spend, and are not a size limit on documents. Both are counted
 # while the body streams in, so memory is bounded rather than measured after the fact.
 max_listing_bytes = 67108864
 max_download_bytes = 268435456
+
 # What the members of one container may add up to, uncompressed — what stands between the
 # archive and a compression bomb. Checked against the container's own declared sizes before a
 # single member is written.
 max_extracted_bytes = 1073741824
+
 # Attempts after a transient failure, and the shape of the wait between them: the first
 # backoff, multiplied by the factor each time. The backend was measured staying down for about
 # an hour, so the waits are long on purpose — short retries spend the request budget without
@@ -105,12 +104,14 @@ max_extracted_bytes = 1073741824
 retries = 3
 backoff_initial = 15.0
 backoff_factor = 4.0
+
 # Failed downloads a single document is allowed before the watcher stops retrying it. Counted
 # in the manifest across runs and never reset: one try per run, so a source that is down for an
 # afternoon costs a document one attempt rather than its whole budget — and, by the same
 # arithmetic, a document that has spent it stays `failed` and does not rejoin the queue when the
 # sweep sees it again. A different budget from retries, which is what one request is worth.
 max_document_attempts = 3
+
 # Overridden only to point at a test server or a mirror.
 base_url = "https://www.rad.cvm.gov.br/ENETWeb/"
 
