@@ -28,24 +28,33 @@ class RadSource:
     Listing and download over one client, which is the point of the pairing: the two
     halves share one minimum interval and one request budget.
 
-    ``max_extracted_bytes`` is carried here because this is the last place that still knows
-    it: ``Source`` is a neutral protocol and the pipeline calls ``download`` with a document
-    and a directory, so a cap the composition root does not hand over now is a cap nothing
-    can ever set.
+    ``max_extracted_bytes`` and ``reading_pdf`` are carried here because this is the last
+    place that still knows them: ``Source`` is a neutral protocol and the pipeline calls
+    ``download`` with a document and a directory, so a setting the composition root does not
+    hand over now is a setting nothing can ever apply.
     """
 
-    __slots__ = ("_client", "_max_extracted_bytes")
+    __slots__ = ("_client", "_max_extracted_bytes", "_reading_pdf")
 
     def __init__(
-        self, client: RadClient, *, max_extracted_bytes: int = MAX_EXTRACTED_BYTES
+        self,
+        client: RadClient,
+        *,
+        max_extracted_bytes: int = MAX_EXTRACTED_BYTES,
+        reading_pdf: bool = False,
     ) -> None:
         self._client = client
         self._max_extracted_bytes = max_extracted_bytes
+        self._reading_pdf = reading_pdf
 
     def list_window(self, days: Sequence[date]) -> list[SourceDocument]:
         return sweep(self._client, days)
 
     def download(self, document: SourceDocument, into: Path) -> Delivery:
         return fetch(
-            self._client, document, into, max_extracted_bytes=self._max_extracted_bytes
+            self._client,
+            document,
+            into,
+            max_extracted_bytes=self._max_extracted_bytes,
+            want_reading_pdf=self._reading_pdf,
         )

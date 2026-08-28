@@ -130,7 +130,11 @@ def open_source(config: Config) -> Iterator[Source]:
         max_listing_bytes=config.max_listing_bytes,
         max_download_bytes=config.max_download_bytes,
     ) as client:
-        yield RadSource(client, max_extracted_bytes=config.max_extracted_bytes)
+        yield RadSource(
+            client,
+            max_extracted_bytes=config.max_extracted_bytes,
+            reading_pdf=config.fre_reading_pdf,
+        )
 
 
 def probe_source(config: Config) -> str:

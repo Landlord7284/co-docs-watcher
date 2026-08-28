@@ -295,6 +295,60 @@ membro pode ser guardado, nunca o que ele diz.
 Consequência: o hash é gravado **por arquivo**, com marcador de estabilidade, e
 serve integridade e auditoria — nunca deduplicação.
 
+### A cópia de leitura do FRE (medido 28/08/2026)
+
+O pacote do FRE não traz PDF nenhum. Medido em 28/08/2026 sobre duas entregas de
+27/08/2026 — Metalúrgica Gerdau (`numSequencia` 161120, versão 3) e SLC Agrícola
+(`numSequencia` 161107, versão 4) — o ZIP tem exatamente dois membros:
+
+```
+008656FRE31-12-2026v3.xml   10.686.975   XML estruturado
+FormularioCadastral.xml          7.588
+```
+
+A versão legível existe, mas atrás de outro caminho. É o que o ícone
+"Visualizar o Documento" do campo 10 abre:
+
+```
+OpenPopUpVer('frmGerenciaPaginaFRE.aspx?NumeroSequencialDocumento=161120&CodigoTipoInstituicao=1')
+```
+
+Essa página é uma casca, não um documento, e o PDF está a cinco requisições:
+
+| # | Requisição | Resposta medida |
+|---|---|---|
+| 1 | `GET frmConsultaExternaCVM.aspx` | a página de consulta. Nada é lido dela: o servidor confere que a sessão entrou pela porta da frente |
+| 2 | `GET frmGerenciaPaginaFRE.aspx?NumeroSequencialDocumento=…&CodigoTipoInstituicao=1` | 200, `text/html`, 27.792 bytes. Emite `ASP.NET_SessionId`, `__VIEWSTATE`, `__EVENTVALIDATION` e os campos ocultos que o resto usa: `hdnHash` (42 caracteres), `hdnCodigoCvm`, `hdnCodigoTipoDocumento`, `hdnDescricaoDocumento` (`FREWEB`), `hdnHabilitaCaptcha`, e as site-keys reCAPTCHA v2 e v3 |
+| 3 | `GET frmRelatorioPDF.aspx?…&Hash=…` | 200, `text/html`, 24.321 bytes, `<title>Download PDF - EXTERNO</title>`. Também uma casca: expõe três PageMethods |
+| 4 | `POST frmRelatorioPDF.aspx/CarregarMenuRelatorios` | JSON de 22.279 bytes: a árvore jsTree das seções, **114 nós** neste documento, todos `selected` por padrão |
+| 5 | `POST frmRelatorioPDF.aspx/GerarRelatorio` | 37,7 s, e o documento inteiro em base64 no campo `ConteudoLido`, com `Finalizado: true` |
+
+`ContinuarLeituraRelatorio` é a continuação paginada, chamada enquanto
+`Finalizado` for falso. Não foi exercida: o passo 5 já veio finalizado.
+
+**A cadeia é presa à sessão e à origem.** Chamar `GerarRelatorio` com o cookie do
+passo 3 apenas devolve `Erro: true` e:
+
+```
+MensagemErro: "ERRO: Por favor, acesse este conteúdo pela página principal dos documentos"
+```
+
+Só passou depois de percorrer 1 → 2 → 3 com `Referer` a cada salto. A caminhada é
+a credencial.
+
+**O corpo é um buffer fixo de 16 MiB.** Os 22.369.624 caracteres de base64
+decodificam para 16.777.216 bytes exatos. O PDF — único `%%EOF` do arquivo —
+termina no byte 11.106.939, e os 5.670.272 restantes são um `\n` e NUL. O que a
+resposta diz de si mesma não serve: `BytesLidos` relata o buffer e `TamanhoTotal`
+relata `0`. Aparado no `%%EOF`, é um PDF 1.4 de 463 páginas com o cabeçalho
+`Formulário de Referência - 2026 - METALURGICA GERDAU S.A. Versão : 3`, e
+`NomeArquivo` vem `161120_008656_28082026140851.pdf` — a mesma forma
+`{numSequencia}_{código CVM}_{instante}.pdf` do PDF gerado dentro do ZIP do ITR.
+
+Consequência: o fim do documento é achado no conteúdo, nunca nos campos que o
+descrevem — a mesma regra que a assinatura de conteúdo já impõe em todo o resto
+deste limite.
+
 ---
 
 ## 5. Identidade e versões
@@ -408,6 +462,12 @@ provavelmente por volume, e não há como conhecer o limiar sem provocá-lo.
 **Se vier `"S"`, não há contorno legítimo.** A saída é reduzir a frequência, não
 burlar. O robô deve encerrar a execução com código de saída próprio.
 
+**A geração da cópia de leitura tem o seu próprio gatilho.** `hdnHabilitaCaptcha`
+na casca do visualizador diz se a página vai anexar um token v3 — medido `"N"` em
+28/08/2026 — e `GerarRelatorio` pode responder `V2: true` no meio da cadeia, o que
+põe um reCAPTCHA interativo na frente da geração. São a mesma notícia que
+`SolicitarCaptcha: "S"` em outro vocabulário, e a reação é a mesma: parar.
+
 ### O serviço WCF por trás cai — alto
 
 Depois de cerca de doze chamadas em poucos minutos, o backend passou a responder
@@ -488,4 +548,10 @@ não é um endpoint endurecido.
   de dois anos, não confirmado.
 - Quantas companhias cabem numa lista de `empresa`. Duas funcionam; a varredura
   global torna a pergunta menos urgente.
-- O gatilho concreto de `SolicitarCaptcha`.
+- O gatilho concreto de `SolicitarCaptcha`, e o de `hdnHabilitaCaptcha` /
+  `V2` na página que gera a cópia de leitura.
+- A forma de um `GerarRelatorio` que precise de mais de uma leitura. Medido
+  28/08/2026, um FRE de 463 páginas veio finalizado na primeira resposta, então
+  `ContinuarLeituraRelatorio` nunca foi exercido contra a fonte real.
+- Se existe página equivalente à `frmGerenciaPaginaFRE.aspx` para as outras
+  categorias estruturadas cujo pacote também possa vir sem PDF.

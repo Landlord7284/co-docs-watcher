@@ -22,10 +22,29 @@ from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from tests.rad import envelope, payload, row
+from tests.rad import (
+    envelope,
+    generator_control,
+    padded_pdf,
+    payload,
+    row,
+    section_tree,
+    viewer_page,
+)
 
 SEARCH_PATH = "/frmConsultaExternaCVM.aspx/ListarDocumentos"
 DOWNLOAD_PATH = "/frmDownloadDocumento.aspx"
+
+#: The reading-copy chain: the front door the generator checks for, the two shells, and the
+#: two PageMethods the walk actually calls.
+ENTRY_PATH = "/frmConsultaExternaCVM.aspx"
+VIEWER_PATH = "/frmGerenciaPaginaFRE.aspx"
+GENERATOR_PATH = "/frmRelatorioPDF.aspx"
+MENU_METHOD = f"{GENERATOR_PATH}/CarregarMenuRelatorios"
+GENERATE_METHOD = f"{GENERATOR_PATH}/GerarRelatorio"
+
+#: What the generator hands back for a document it is asked to render.
+READING_PDF = b"%PDF-1.4\nthe reading copy\n%%EOF"
 
 #: A plausible XML member for structured packages: stable across downloads.
 XML_MEMBER = b'<?xml version="1.0"?><Documento><CodigoCvm>9512</CodigoCvm></Documento>'
@@ -44,7 +63,9 @@ class ServedDocument:
     status: str = "Ativo"
     delivery: date = date(2026, 8, 24)
     subject: str = "Assunto de teste"
-    kind: str = "pdf"  # "pdf" | "zip" | "html" — html is the error page with HTTP 200
+    # "pdf" | "zip" | "fre" | "html". "fre" is the measured FRE package: two XMLs and no
+    # reading copy at all. "html" is the source's error page, served with HTTP 200.
+    kind: str = "pdf"
 
     def __post_init__(self) -> None:
         if not self.protocol:
@@ -84,6 +105,8 @@ class Scenario:
     #: Listings left to fail with ``temErro`` before answering again. A very large number
     #: is "the backend is down and stays down".
     failing_listings: int = 0
+    #: Whether the generator demands an interactive captcha instead of rendering.
+    reading_captcha: bool = False
 
     def get(self, document_id: int, version: int) -> ServedDocument | None:
         return next(
@@ -103,6 +126,8 @@ class FakeRad:
         self.scenario = Scenario()
         self.listing_requests: list[date] = []
         self.download_requests: list[tuple[int, int]] = []
+        #: Every path of the reading-copy chain, in the order it was walked.
+        self.reading_requests: list[str] = []
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
         self._server.rad = self  # type: ignore[attr-defined]
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
@@ -128,7 +153,11 @@ class _Handler(BaseHTTPRequestHandler):
         return self.server.rad  # type: ignore[attr-defined]
 
     def do_POST(self) -> None:
-        if urlparse(self.path).path != SEARCH_PATH:
+        path = urlparse(self.path).path
+        if path in (MENU_METHOD, GENERATE_METHOD):
+            self._page_method(path)
+            return
+        if path != SEARCH_PATH:
             self.send_error(404)
             return
         length = int(self.headers.get("Content-Length", "0"))
@@ -153,6 +182,11 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path in (ENTRY_PATH, VIEWER_PATH, GENERATOR_PATH):
+            self.rad.reading_requests.append(parsed.path)
+            body = viewer_page() if parsed.path == VIEWER_PATH else "<html><body/></html>"
+            self._respond(body.encode(), "text/html; charset=utf-8")
+            return
         if parsed.path != DOWNLOAD_PATH:
             self.send_error(404)
             return
@@ -169,12 +203,34 @@ class _Handler(BaseHTTPRequestHandler):
         serial = self.rad.download_requests.count((document_id, version))
         if document.kind == "zip":
             content = _structured_package(document, serial)
+        elif document.kind == "fre":
+            content = _fre_package(document)
         elif document.kind == "html":
             content = b"<html><body>erro</body></html>"
         else:
             content = _pdf(document, b"stable")
         # ``Content-Type`` always lies on this source; the sniffing must not need it.
         self._respond(content, "text/html")
+
+    def _page_method(self, path: str) -> None:
+        """The generator's two PageMethods, and the origin check it guards them with."""
+        self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        self.rad.reading_requests.append(path)
+        if ENTRY_PATH not in self.rad.reading_requests:
+            # The source's own refusal: a session that did not come through the front door.
+            answer = generator_control(
+                None,
+                Erro=True,
+                MensagemErro="ERRO: Por favor, acesse este conteúdo pela página principal "
+                "dos documentos",
+            )
+        elif path == MENU_METHOD:
+            answer = section_tree("1000", "1030")
+        elif self.rad.scenario.reading_captcha:
+            answer = generator_control(None, Finalizado=False, V2=True)
+        else:
+            answer = generator_control(padded_pdf(READING_PDF, buffer=4096), BytesLidos=4096)
+        self._respond(json.dumps({"d": answer}).encode(), "application/json; charset=utf-8")
 
     def _respond(self, content: bytes, content_type: str) -> None:
         self.send_response(200)
@@ -189,6 +245,15 @@ class _Handler(BaseHTTPRequestHandler):
 
 def _pdf(document: ServedDocument, variant: bytes) -> bytes:
     return b"%PDF-1.7\n% " + str(document.document_id).encode() + b" " + variant + b"\n%%EOF\n"
+
+
+def _fre_package(document: ServedDocument) -> bytes:
+    """The measured FRE delivery: the structured form and the registration form, no PDF."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(f"{document.cvm_code}FRE31-12-2026v{document.version}.xml", XML_MEMBER)
+        archive.writestr("FormularioCadastral.xml", XML_MEMBER)
+    return buffer.getvalue()
 
 
 def _structured_package(document: ServedDocument, serial: int) -> bytes:

@@ -85,6 +85,7 @@ retries = 3                    # attempts after a transient failure
 backoff_initial = 15.0         # first wait between attempts; never below min_request_interval
 backoff_factor = 4.0           # the wait is multiplied by this each attempt
 max_document_attempts = 3      # failed downloads one document gets, counted across runs
+fre_reading_pdf = false        # ask the source to render the PDF an FRE package omits
 base_url = "https://www.rad.cvm.gov.br/ENETWeb/"  # override only for a test server or mirror
 
 [prefix_overrides]
@@ -282,6 +283,11 @@ documents_root/
 The inbox index of a day lists what each watched company delivered, with links into the
 archive — and mentions documents that were cancelled at the source or could not be
 downloaded, because silence reads exactly like nothing having been published.
+
+A Formulário de Referência arrives as XML: its package carries no PDF. Set
+`source.fre_reading_pdf = true` and the watcher asks the source to render one and files it
+beside the XMLs. It costs five extra requests and about half a minute per document, so it is
+off by default; `doctor` prints which way it is set.
 
 ## Deployment
 

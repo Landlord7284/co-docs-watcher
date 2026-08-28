@@ -1,8 +1,14 @@
 """Transport to the source: the search PageMethod, the download GET, and rate discipline.
 
-There is no session, no cookie, and no ``__VIEWSTATE``: the search is a single JSON POST and
-the download a single GET, verified to answer identically with no cookie at all. What the
-download hands back is the body and nothing else: ``Content-Type`` says ``text/html`` for
+The search is a single JSON POST and the download a single GET: no session, no cookie and no
+``__VIEWSTATE``, verified to answer identically with no cookie at all. The reading copy of a
+document whose container carries none is the exception, and it is one because the source made
+it one — the page that generates it checks the session it was reached through and refuses a
+request that arrived any other way. So the transport carries a cookie jar for that chain and
+the two disciplined exchanges it needs, ``open_page`` and ``call_page_method``; which pages
+they are walked through belongs to ``reading_pdf.py``, and this module never learns.
+
+What the download hands back is the body and nothing else: ``Content-Type`` says ``text/html`` for
 PDFs and ZIPs alike and ``Content-Disposition`` names nothing a human or a machine can use,
 so carrying either one further would only offer a later decision a header this source is
 measured lying in. What the
@@ -26,7 +32,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import date
 from types import TracebackType
 from typing import Any, TypeVar
@@ -222,6 +228,64 @@ class RadClient:
             lambda: self._download(params), what=f"download of ({document_id}, {version})"
         )
 
+    def open_page(
+        self, path: str, params: Mapping[str, str], *, referer: str | None
+    ) -> tuple[str, str]:
+        """One HTML page of the site, and the URL it was read from.
+
+        The URL comes back because the next hop needs it as its ``Referer``: the generator
+        refuses a session that did not arrive through the pages before it, so the walk is the
+        credential and each step has to be able to name the one before it.
+        """
+        url = self._base_url + path
+        body, _ = self._with_retries(
+            lambda: self._request(
+                "GET",
+                url,
+                cap=self._max_listing_bytes,
+                over_cap=SourceContractError(
+                    f"the page {path} exceeded the {self._max_listing_bytes} byte cap"
+                ),
+                params=dict(params),
+                headers=_referring(referer),
+            ),
+            what=f"page {path}",
+        )
+        return _decoded(body, what=f"the page {path}"), str(httpx.URL(url, params=params))
+
+    def call_page_method(
+        self, path: str, payload: Mapping[str, Any], *, referer: str
+    ) -> Any:
+        """One PageMethod call: JSON in, and whatever is inside the ``d`` envelope out.
+
+        Capped like a download rather than like a listing, because one of these answers is
+        the document: the generator delivers a whole PDF base64-encoded in a single field.
+        """
+        body, _ = self._with_retries(
+            lambda: self._request(
+                "POST",
+                self._base_url + path,
+                cap=self._max_download_bytes,
+                over_cap=DocumentError(
+                    f"the answer of {path} exceeded the {self._max_download_bytes} byte cap"
+                ),
+                content=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json; charset=UTF-8",
+                    "X-Requested-With": "XMLHttpRequest",
+                    **_referring(referer),
+                },
+            ),
+            what=f"page method {path}",
+        )
+        try:
+            parsed = json.loads(body)
+        except (ValueError, UnicodeDecodeError) as error:
+            raise SourceContractError(f"the answer of {path} is not JSON: {error}") from error
+        if not isinstance(parsed, dict) or "d" not in parsed:
+            raise SourceContractError(f"the answer of {path} carries no 'd' envelope")
+        return parsed["d"]
+
     # --- One attempt of each operation. ---
 
     def _search(self, payload: dict[str, str]) -> str:
@@ -333,6 +397,27 @@ class RadClient:
         finally:
             response.close()
             self._last_request_at = self._monotonic()
+
+
+def _referring(referer: str | None) -> dict[str, str]:
+    """The ``Referer`` header, or none at all — never an empty one, which is a third answer."""
+    return {} if referer is None else {"Referer": referer}
+
+
+def _decoded(body: bytes, *, what: str) -> str:
+    """Text out of a page, under the encoding it is served in and then under the fallback.
+
+    The same narrow retry an XML member of this source gets, and for the same reason:
+    ISO-8859-1 decodes every byte, so a page that still fails is malformed rather than
+    mislabelled, and the failure reported is the first one.
+    """
+    try:
+        return body.decode("utf-8")
+    except UnicodeDecodeError as error:
+        try:
+            return body.decode("iso-8859-1")
+        except UnicodeDecodeError:
+            raise SourceContractError(f"{what} cannot be read as text: {error}") from error
 
 
 def _open_envelope(body: bytes) -> str:

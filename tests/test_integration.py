@@ -404,3 +404,77 @@ def test_run_against_the_fake_server_as_a_subprocess(site: Site) -> None:
     # The streams are what the operator watched; the file is what answers the question later.
     written = (site.logs_root / "co-docs-watcher.log").read_text(encoding="utf-8")
     assert "run: finished clean" in written
+
+
+# --- The reading copy an FRE container does not carry. ---
+
+
+def fre_today() -> ServedDocument:
+    """The measured FRE delivery: two XMLs, and nothing in the container a person reads."""
+    return ServedDocument(
+        document_id=103,
+        version=3,
+        delivery=TODAY,
+        category="FRE - Formulário de Referência",
+        subject="",
+        kind="fre",
+    )
+
+
+def test_an_fre_arrives_as_two_xmls_when_the_reading_copy_is_not_asked_for(site: Site) -> None:
+    site.server.scenario.documents = [fre_today()]
+
+    assert site.cli("run") == 0
+
+    assert site.archive_snapshot() == [
+        f"{TODAY.isoformat()}/PETR/FRE/009512FRE31-12-2026v3.xml",
+        f"{TODAY.isoformat()}/PETR/FRE/FormularioCadastral.xml",
+        f"_inbox/{TODAY.isoformat()}.md",
+    ]
+    assert site.server.reading_requests == []
+
+
+def test_the_configured_reading_copy_is_generated_and_named_by_the_watcher(site: Site) -> None:
+    site.write_config(source="fre_reading_pdf = true\n")
+    site.server.scenario.documents = [fre_today()]
+
+    assert site.cli("run") == 0
+
+    day = TODAY.isoformat()
+    assert site.archive_snapshot() == [
+        f"{day}/PETR/FRE/009512FRE31-12-2026v3.xml",
+        # Named by the watcher, in the convention the rest of the archive uses: what the
+        # source called it carries the instant it was generated and repeats for nothing.
+        f"{day}/PETR/FRE/FRE_103_V03.pdf",
+        f"{day}/PETR/FRE/FormularioCadastral.xml",
+        f"_inbox/{day}.md",
+    ]
+    assert (site.day_dir(TODAY) / "PETR/FRE/FRE_103_V03.pdf").read_bytes().startswith(b"%PDF-")
+    # Walked through the front door, in order, because the generator refuses any other way in.
+    assert site.server.reading_requests[:3] == [
+        "/frmConsultaExternaCVM.aspx",
+        "/frmGerenciaPaginaFRE.aspx",
+        "/frmRelatorioPDF.aspx",
+    ]
+
+
+def test_the_reading_copy_is_recorded_as_the_unstable_file_it_is(site: Site) -> None:
+    site.write_config(source="fre_reading_pdf = true\n")
+    site.server.scenario.documents = [fre_today()]
+    site.cli("run")
+
+    files = {
+        record.relative_path.name: record
+        for record in site.manifest().files.files_for((103, 3))
+    }
+
+    assert files["FRE_103_V03.pdf"].stable is False
+    assert files["FormularioCadastral.xml"].stable is True
+
+
+def test_a_captcha_from_the_generator_ends_the_run_with_four(site: Site) -> None:
+    site.write_config(source="fre_reading_pdf = true\n")
+    site.server.scenario.documents = [fre_today()]
+    site.server.scenario.reading_captcha = True
+
+    assert site.cli("run") == 4
