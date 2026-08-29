@@ -269,7 +269,8 @@ The image is pulled, not built: `ghcr.io/landlord7284/co-docs-watcher`, publishe
 `run` sweeps `discovery.days` (7 by default); `run --monitor` sweeps
 `discovery.monitor_days` (2). They differ in nothing else: the same queue is drained, the
 same retention frontier is purged against, the same indexes are regenerated. The shipped
-cadence is the monitor hourly from 07:00 to 23:00 and the full sweep daily at 05:10.
+cadence is the monitor at midnight and hourly from 09:00 to 23:00, and the full sweep daily
+at 08:00.
 
 Keep both. However often the monitor fires, it never asks about a day older than yesterday,
 and the older days are where the archive is audited and reconciled: a gap left by an outage
@@ -314,9 +315,9 @@ that one, so `1`, `2` and `4` still reach whoever watches the container.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `MONITOR_SCHEDULE` | `0 7-23 * * *` | when `run --monitor` fires |
+| `MONITOR_SCHEDULE` | `0 0,9-23 * * *` | when `run --monitor` fires |
 | `MONITOR_ENABLED` | `true` | `false` omits the monitor's crontab line |
-| `SWEEP_SCHEDULE` | `10 5 * * *` | when `run` fires |
+| `SWEEP_SCHEDULE` | `0 8 * * *` | when `run` fires |
 | `SWEEP_ENABLED` | `true` | `false` omits the sweep's line — and leaves the warning firing |
 | `RUN_ON_START` | `sweep` | `sweep`, `monitor` or `none`: what a container start runs |
 | `PUID` / `PGID` | `1000` | the identity the watcher runs as, and owns its files as |
