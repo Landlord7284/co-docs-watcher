@@ -23,7 +23,7 @@ import argparse
 import logging
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from pathlib import Path
 
@@ -389,9 +389,41 @@ def _cmd_list(config: Config, args: argparse.Namespace) -> ExitCode:
     if not companies:
         print("the watch list is empty" if not args.query else "nothing matches")
         return ExitCode.CLEAN
-    for company in companies:
-        print(f"{company.cvm_code}  {company.prefix:<12}  {company.legal_name}")
+    for line in _watch_list_table(companies):
+        print(line)
     return ExitCode.CLEAN
+
+
+#: The columns ``list`` prints, each with the value it reads off an entry.
+_LIST_COLUMNS: tuple[tuple[str, Callable[[WatchedCompany], str]], ...] = (
+    ("prefix", lambda company: company.prefix),
+    ("cvm code", lambda company: company.cvm_code),
+    ("legal name", lambda company: company.legal_name),
+)
+
+
+def _watch_list_table(companies: Sequence[WatchedCompany]) -> tuple[str, ...]:
+    """The watch list as a header and one aligned row per company, ordered by prefix.
+
+    The file's order is the human's and is never rearranged; this is a reading of it, and
+    a reader looking for one company scans the folder names alphabetically rather than in
+    the order the companies happened to be added. Ties break on the CVM code, which is
+    unique, so two runs of the same watch list print the same rows in the same order.
+
+    Columns are sized from the header and the rows together: a heading wider than every
+    value under it still has to leave the column standing.
+    """
+    ordered = sorted(companies, key=lambda company: (company.prefix, company.cvm_code))
+    rows = [tuple(read(company) for _, read in _LIST_COLUMNS) for company in ordered]
+    headers = tuple(label for label, _ in _LIST_COLUMNS)
+    widths = [max(len(cell) for cell in column) for column in zip(headers, *rows, strict=True)]
+    return tuple(_list_row(cells, widths) for cells in (headers, *rows))
+
+
+def _list_row(cells: Sequence[str], widths: Sequence[int]) -> str:
+    """One row, padded except on the last column, which nothing follows."""
+    padded = [f"{cell:<{width}}" for cell, width in zip(cells[:-1], widths, strict=False)]
+    return "  ".join([*padded, cells[-1]])
 
 
 def _cmd_rm(config: Config, args: argparse.Namespace) -> ExitCode:

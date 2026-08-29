@@ -155,8 +155,9 @@ Requires a usable registry: if the FCA package cannot be fetched or read, `add` 
 
 ### `list [QUERY]`
 
-Prints the watch list, one company per line (`cvm_code  prefix  legal_name`). `QUERY`
-narrows by prefix, CVM code, or legal-name substring.
+Prints the watch list as a table under a header — `prefix`, `cvm code`, `legal name` —
+one company per line, ordered alphabetically by prefix. `QUERY` narrows by prefix, CVM
+code, or legal-name substring.
 
 ### `rm QUERY`
 

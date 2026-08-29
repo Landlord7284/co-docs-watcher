@@ -238,6 +238,22 @@ def test_add_list_rm_round_trip(config_file: Path, capsys: pytest.CaptureFixture
     assert "empty" in capsys.readouterr().out
 
 
+def test_list_prints_a_header_and_orders_by_prefix(
+    config_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["--config", str(config_file), "add", "--ticker", "VALE3"]) == 0
+    assert cli.main(["--config", str(config_file), "add", "--ticker", "PETR4"]) == 0
+    capsys.readouterr()
+
+    assert cli.main(["--config", str(config_file), "list"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].split() == ["prefix", "cvm", "code", "legal", "name"]
+    # Added VALE first; the reading is alphabetical, not the order of the file.
+    assert [line.split()[0] for line in lines[1:]] == ["PETR", "VALE"]
+    # The header is wider than every value under it, and still leaves its column standing.
+    assert lines[1] == "PETR    009512    PETROLEO BRASILEIRO S.A. PETROBRAS"
+
+
 def test_adding_twice_changes_nothing_and_says_so(
     config_file: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
