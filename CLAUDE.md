@@ -25,7 +25,7 @@ Where documentation and code diverge, the code wins and the document is correcte
 
 All code, configuration, file names, database schema, log output, comments, docstrings, commit messages, and technical documentation in this repository are in **English**. `docs/fonte-rad.md` and day-to-day conversation might be in **pt-BR**. This never crosses into the code.
 
-Conversation names concepts in Portuguese; the English vocabulary is **fixed** so that different sessions do not invent competing translations. Translate, never transliterate:
+Conversation names concepts in Portuguese; the repository does not. A concept discussed in Portuguese is translated when it becomes a name — a function, a flag, a column, a directory, a log line — and never transliterated: the language a decision was taken in leaves no trace in what is written.
 
 The only exception is data that is not ours: RAD wire-format names (`temErro`, `SolicitarCaptcha`, `numSequencia`, `numVersao`, `numProtocolo`) are quoted literally when describing the wire, and take English names as model attributes — `numSequencia` → `document_id`, `numVersao` → `version`, `numProtocolo` → `protocol`. `CNPJ` keeps its regulatory name.
 

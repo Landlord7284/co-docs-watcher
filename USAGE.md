@@ -190,41 +190,8 @@ watermark; a monitor run leaves it alone, and warns when it has fallen behind th
 retention window. Stop scheduling the full sweep and that warning fires on every run:
 give up the older days deliberately or keep the daily `run`.
 
-A registry that cannot be refreshed, or a document that cannot be fetched, is reported
-and skipped: the run finishes and exits `1`.
-
-Every run ends by printing what it did, one row per step, in the order the steps ran:
-
-```
-windows    discovery 2026-08-23 .. 2026-08-24 (2 dates), retention 2026-08-18 .. 2026-08-24 (7 dates)
-reconcile  recovered=0 requeued=0 failed=0 enacted=0 files_removed=0 staging_discarded=0
-registry   available
-discovery  rows=902 watched=7 queued=1 skipped=0 unchanged=6 deactivated=0 cancelled=0 refused=0
-fetch      available=1 retrying=0 failed=0 bytes=2,307,427
-purge      documents=0 dates=0 indexes=0 unremoved=0
-inbox      written=1 unchanged=0 removed=0 entries=1 refused=0 today=_inbox/2026-08-24.md
-result     clean (exit 0)
-```
-
-The table is the same eight rows every time and every counter is always printed, so a run
-that did nothing reads as a run that did nothing rather than as a run that said nothing.
-What is worth knowing about the rows:
-
-- `discovery` — `rows` is everything the sweep saw, market-wide; `watched` is the part of
-  it belonging to a watched company and falling inside the window; `refused` counts rows
-  the manifest would not accept.
-- `fetch` — `bytes` is what the successful downloads weigh **in the archive**, members of
-  an extracted container included, and not what came over the wire.
-- `purge` — `unremoved` counts date directories that would not delete; their manifest rows
-  are kept, because the rows are the only record of where those files are.
-- `inbox` — `today` is the day's index, named relative to `documents_root`, or `none` when
-  today has nothing to report and no index was written.
-- `registry` — `available`, or why not: a failed refresh costs `add`, never the run.
-- `result` — the verdict and the exit code the process returns. A run the source cut short
-  says so here, and says that the counters above it are a partial count.
-
-`discovery` and `fetch` read `not reached` when a captcha or the request budget stopped the
-network work before them — zeros would be a measurement nobody took.
+Every run ends by printing a one-line-per-step summary of what it did, and the exit
+code it returns.
 
 ### `reconcile`
 
@@ -245,15 +212,7 @@ number of watched companies, the document counts per state, and the date of the 
 completed sweep. Touches nothing and talks to no one.
 
 Anything the archive still owes — queued, interrupted mid-download, or given up on — is
-listed one per line with the last failure recorded against it, verbatim:
-
-```
-documents: 41 (1 discovered, 1 downloading, 39 available)
-pending (2):
-  (161009, 6) discovered 020257 FRE - Formulário de Referência delivered 2026-08-20
-    2 failed attempt(s), last 2026-08-25 14:53:06-03:00: document (161009, 6): member
-    '020257FRE31-12-2026v6.xml' is not well-formed XML: not well-formed (invalid token)
-```
+listed one per line with the last failure recorded against it, verbatim.
 
 A document is retried for three failed attempts, one per run, and then stays `failed`.
 
@@ -305,66 +264,38 @@ docker compose up -d
 The image is pulled, not built: `ghcr.io/landlord7284/co-docs-watcher`, published by the
 `docker-publish` workflow for `linux/amd64` and `linux/arm64`.
 
-### The two profiles, and why both
+### The two profiles
 
 `run` sweeps `discovery.days` (7 by default); `run --monitor` sweeps
 `discovery.monitor_days` (2). They differ in nothing else: the same queue is drained, the
-same retention frontier is purged against, the same indexes are regenerated.
+same retention frontier is purged against, the same indexes are regenerated. The shipped
+cadence is the monitor hourly from 07:00 to 23:00 and the full sweep daily at 05:10.
 
-The cadence the environment ships with is the monitor hourly from 07:00 to 23:00 every day,
-and the full sweep once a day at 05:10 — seventeen firings of two listing requests, plus one
-of seven: about **41 listing requests a day**, against a floor of 15 s between requests and a
-per-run fuse of 200.
+Keep both. However often the monitor fires, it never asks about a day older than yesterday,
+and the older days are where the archive is audited and reconciled: a gap left by an outage
+or an update, and the supersessions and cancellations of documents already archived, which
+keep their original delivery date at the source. Only the full sweep advances the
+last-completed-sweep watermark; `SWEEP_ENABLED=false` leaves the staleness warning firing on
+every run.
 
-The daily sweep stays even though the monitor runs seventeen times a day, because frequency
-is not coverage. A 2-day window observes today and yesterday however often it fires. What
-the sweep alone buys is two things: gaps longer than two days — an outage, an update, a NAS
-that was down over a weekend — and the supersessions and cancellations of documents already
-archived, which keep their original delivery date at the source and are therefore visible
-only to a query of the older day. Raising `monitor_days` to 7 instead of keeping the sweep
-would cost about 119 listings a day against 41.
-
-Only the full sweep advances the last-completed-sweep watermark. Turn the sweep off with
-`SWEEP_ENABLED=false` and the staleness warning fires on every run — losing the older days is
-allowed, losing them quietly is not.
-
-### The image, and how it is updated
-
-A push to `main` publishes `latest`. A `v*` git tag publishes the version and its
-major.minor — `v0.1.0` becomes `0.1.0` and `0.1` — and every build is also published under
-`sha-<short>`, which is what a rollback names. Nothing is published from a tree that does not
-lint and test: the publish workflow runs the CI workflow first and needs it to pass.
-
-`IMAGE_TAG` in `.env` chooses what this host follows. `latest` takes every push to `main`;
-`0.1` takes patches and never a `0.2`; `0.1.0` never moves at all. Whichever it is, updating
-is two commands:
+### Updating
 
 ```bash
 docker compose pull
 docker compose up -d
 ```
 
-The second one is not optional. A pull that is never brought up leaves the running container
-on the old image, in silence — the same failure that keeps `docker exec` out of this
-deployment.
-
-The git tag and `version` in `pyproject.toml` are one number: `--version` reports what the
-package declares, so a `v0.2.0` tagged over a `0.1.0` `pyproject` publishes an image that
-introduces itself as the version it is not.
+`IMAGE_TAG` in `.env` chooses what this host follows — `latest` every push to `main`, `0.1`
+patches within that minor, `0.1.0` never moves, and `sha-<short>` a single build, which is
+what a rollback names.
 
 ### The container shape
 
 `restart: unless-stopped`, `init: true`, and the scheduler inside the image —
-[supercronic](https://github.com/aptible/supercronic), pinned by version and verified by
-digest, rendering its crontab from the environment at every start. So a schedule change is an
-edit to `.env` and a `docker compose up -d`, and nothing else.
-
-No host cron, no `docker exec`, no Docker socket. A scheduler outside the container has to
-reach in, and both ways of reaching in fail quietly: the socket is permissioned by the host,
-and a host that tightens it turns every scheduled run into a `permission denied` nobody is
-watching for; `docker exec` runs whatever code the *running* container holds, so an image
-pulled but never brought up keeps executing the old build indefinitely, with nothing
-anywhere saying so.
+[supercronic](https://github.com/aptible/supercronic) — rendering its crontab from the
+environment at every start. A schedule change is an edit to `.env` and a
+`docker compose up -d`, and nothing else. No host cron, no `docker exec`, no Docker
+socket.
 
 Ad-hoc commands are `docker compose run --rm watcher …`, against the same three roots:
 
@@ -396,29 +327,6 @@ that one, so `1`, `2` and `4` still reach whoever watches the container.
 Every variable is defaulted only when **unset**. `SWEEP_ENABLED=` is a line someone wrote on
 purpose, and the container refuses to start rather than read it as `true`. So does a
 container with both profiles disabled, which would schedule nothing at all.
-
-**There is no `TZ` here.** `source.timezone` in `config.toml` is the project's only
-declaration of a zone, and the entrypoint exports `TZ` from it before it does anything else.
-The watcher anchors every date it writes — directory names, the retention frontier, the
-inbox, the watermark, log timestamps — on that value and is immune to the host zone; the
-crontab is not, and left to itself it would run UTC, firing `0 7-23` from 04:00 to 20:00 in
-São Paulo and stopping the monitor four hours before the source does. Deriving it is what
-keeps the zone the schedule fires in and the zone the archive is written in the same answer
-to the same question.
-
-Four things are refused rather than guessed at, all with exit `2`:
-
-| Refusal | Why |
-|---|---|
-| `CO_WATCHER_CONFIG` empty or naming something that is not a file | resolving it here would be a second copy of the CLI's discovery chain |
-| `[source]` declaring no `timezone` | the shell carries no default of its own; `config.example.toml` ships the value |
-| a zone the system zone database does not have | the scheduler resolves the name there, and falls back to UTC in silence |
-| a `TZ` in the environment that contradicts `source.timezone` | two answers to one question, and the schedule and the archive would part ways |
-
-A `TZ` that *agrees* is redundant and accepted — orchestrators inject one unasked, and a
-value that says what `source.timezone` already says is not a second answer. `doctor` prints
-the process zone beside `source.timezone`, so the derivation is verifiable without exec'ing
-into the container.
 
 `RUN_ON_START` is the full sweep because a container start usually follows a restart, an
 update or downtime — the gap case exactly, which the monitor's two days cannot see. A

@@ -1,35 +1,27 @@
 # co-docs-watcher — example configuration.
 #
-# Copy to one of the discovered locations and edit:
-#
 #   cp config.example.toml config.toml
 #
 # Discovery order, first hit wins: --config PATH, $CO_WATCHER_CONFIG, ./config.toml,
-# ./co-docs-watcher.toml, ~/.config/co-docs-watcher/config.toml, built-in defaults.
-# Falling through to the built-in defaults logs a warning: they point at ./var/… relative
-# to the current directory, and an archive that is not the intended one looks empty in
-# exactly the same way a quiet market does.
+# ./co-docs-watcher.toml, ~/.config/co-docs-watcher/config.toml, built-in defaults —
+# falling through to those logs a warning.
 #
-# Every key below is shown with its default. Unknown sections and unknown keys are
-# rejected rather than ignored — a typo that silently keeps a default is a configuration
-# that lies. The only exception is [prefix_overrides], whose keys are data.
+# Every key below is shown with its default. Unknown sections and unknown keys are rejected;
+# [prefix_overrides] is the exception, since its keys are data.
 
 [paths]
 # All three roots are REQUIRED. A relative root is resolved against the directory holding THIS
-# file, never against the directory the command was typed in — so a project-local install is
-# just a checkout with a config.toml beside it, and it archives in the same place whether you
-# run it by hand or from cron. Absolute paths are equally valid, and are what a system-wide
-# installation uses.
+# file, never against the directory the command was typed in. Absolute paths are equally valid.
 #
-# data_root is private — watch list, SQLite manifest, lock, FCA registry cache — and must
-# live on a filesystem local to the process: SQLite locking over SMB/NFS is unreliable.
+# data_root is private — watch list, SQLite manifest, lock, FCA registry cache — and must live
+# on a filesystem local to the process: SQLite locking over SMB/NFS is unreliable.
 data_root = "var/data"
 
-# documents_root is the shareable archive, organized by delivery date, and holds .tmp/ so
-# that placing a downloaded file is an atomic rename within a single filesystem.
+# documents_root is the shareable archive, organized by delivery date, and holds .tmp/ so that
+# placing a downloaded file is an atomic rename within a single filesystem.
 documents_root = "var/documents"
 
-# logs_root holds the log file. 
+# logs_root holds the log file.
 logs_root = "var/logs"
 
 [logging]
@@ -38,25 +30,23 @@ max_bytes = 5242880
 backups = 5
 
 [retention]
-# N retained dates, counting today: first_retained_date = today - (N - 1). The same
-# frontier drives the purge and the inbox, and caps both discovery windows below.
+# N retained dates, counting today: first_retained_date = today - (N - 1). The same frontier
+# drives the purge and the inbox, and caps both discovery windows below.
 days = 7
 
 [discovery]
 # Dates swept by `run`, ending today. Follows retention.days when unset.
 days = 7
 
-# Dates swept by `run --monitor`, the frequent narrow profile. A superseded or cancelled
-# row keeps its original delivery date at the source, so supersessions of older documents
-# are only visible to the full sweep: schedule a daily `run` beside the monitor.
+# Dates swept by `run --monitor`, the frequent narrow profile. A superseded or cancelled row
+# keeps its original delivery date at the source, so supersessions of older documents are only
+# visible to the full sweep: schedule a daily `run` beside the monitor.
 monitor_days = 2
 
 [files]
-# Creation modes for everything under documents_root: the date and company directories, the
-# documents themselves, the members of a structured package, and the inbox indexes. Declared
-# rather than inherited, because the archive is handed to other people — over a share, a sync,
-# a backup — and the umask of whatever started the process is not an answer to who may read it.
-# Written in octal, the way a mode is read.
+# Creation modes for everything under documents_root — the date and company directories, the
+# documents, the members of a structured package, the inbox indexes — declared rather than
+# inherited from the umask. Written in octal, the way a mode is read.
 directory_mode = 0o755
 file_mode = 0o644
 
@@ -66,67 +56,47 @@ max_age_days = 7
 
 [source]
 # Anchors "today", the date directories, the retention frontier, and the log timestamps.
-# Always the timezone of the source, never that of the host. An unknown name refuses to
-# start instead of falling back.
-#
-# This is the project's only declaration of a zone: the container exports TZ from it, so the
-# hours its schedule fires in are read here too, and cannot drift from the dates below.
+# Always the timezone of the source, never that of the host; an unknown name refuses to start.
+# This is the project's only declaration of a zone: the container exports TZ from it.
 timezone = "America/Sao_Paulo"
 
-# Seconds between requests. The backend behind the page drops under load; this is a floor,
-# not a target.
+# Seconds between requests. A floor, not a target: the backend behind the page drops under load.
 min_request_interval = 15.0
 
 # Safety fuse: a single run never issues more requests than this, whatever it has left to do.
 max_requests_per_run = 200
 
-# What one answer from the source may weigh. A full market day measured ~500 KB and the
-# largest measured delivery is an 8.6 MB package, so both sit far past any real answer: they
-# bound what a malfunction can spend, and are not a size limit on documents. Both are counted
-# while the body streams in, so memory is bounded rather than measured after the fact.
+# What one answer from the source may weigh, counted while the body streams in. They bound what
+# a malfunction can spend, and are not a size limit on documents.
 max_listing_bytes = 67108864
 max_download_bytes = 268435456
 
-# What the members of one container may add up to, uncompressed — what stands between the
-# archive and a compression bomb. Checked against the container's own declared sizes before a
-# single member is written.
+# What the members of one container may add up to, uncompressed. Checked against the container's
+# own declared sizes before a single member is written.
 max_extracted_bytes = 1073741824
 
-# Attempts after a transient failure, and the shape of the wait between them: the first
-# backoff, multiplied by the factor each time. The backend was measured staying down for about
-# an hour, so the waits are long on purpose — short retries spend the request budget without
-# outliving the outage. retries = 0 disables them.
-#
-# backoff_initial may not sit below min_request_interval: both waits happen before a retry and
-# the interval covers whatever the backoff left, so a shorter backoff is not a shorter wait,
-# it is a number the floor overrides in silence. Raise the interval and leave this unset and
-# it follows along; write it too low and the file is refused.
+# Attempts after a transient failure, and the wait between them: backoff_initial, multiplied by
+# backoff_factor each time. retries = 0 disables them. backoff_initial may not sit below
+# min_request_interval — leave it unset and it follows along; write it lower and the file is
+# refused.
 retries = 3
 backoff_initial = 15.0
 backoff_factor = 4.0
 
-# Failed downloads a single document is allowed before the watcher stops retrying it. Counted
-# in the manifest across runs and never reset: one try per run, so a source that is down for an
-# afternoon costs a document one attempt rather than its whole budget — and, by the same
-# arithmetic, a document that has spent it stays `failed` and does not rejoin the queue when the
-# sweep sees it again. A different budget from retries, which is what one request is worth.
+# Failed downloads a single document is allowed before the watcher stops retrying it. Counted in
+# the manifest across runs and never reset, one try per run; a document that has spent it stays
+# `failed` and does not rejoin the queue.
 max_document_attempts = 3
 
-# Whether a run asks the source to render the reading PDF an FRE container does not carry.
-# Off because it is a cost and not a correction: five extra requests and about half a minute
-# of the source's work per document. The filing is archived either way — the two XMLs are the
-# document — and what this buys is a PDF beside them.
+# Whether a run asks the source to render the reading PDF an FRE container does not carry. Five
+# extra requests and about half a minute per document; the filing is archived either way.
 fre_reading_pdf = false
 
 # Overridden only to point at a test server or a mirror.
 base_url = "https://www.rad.cvm.gov.br/ENETWeb/"
 
-# Folder names, keyed by zero-padded CVM code, for when the resolver's pick is
-# typographically right and humanly wrong. Values are validated, never sanitized: an
-# override is a deliberate act, and repairing one quietly would name a folder after
-# something nobody wrote. Letters, digits and hyphens, at most 24 characters — the same
-# shape the resolver produces, so a name refused here is one the archive could not hold.
-# Renaming here does not rename folders already created — the folder name is a snapshot,
-# and identity lives in the manifest.
+# Folder names, keyed by zero-padded CVM code, for when the resolver's pick is typographically
+# right and humanly wrong. Letters, digits and hyphens, at most 24 characters; values are
+# validated, never sanitized. Renaming here does not rename folders already created.
 [prefix_overrides]
 # "003549" = "SCHLOSSER"
