@@ -256,8 +256,9 @@ never a dependency of it: the command it fires is the same one-shot a shell runs
 nothing in `src/` knows the container exists.
 
 ```bash
-cp config.example.toml config.toml   # windows, retention, modes — the same file a hand-run reads
-cp .env.example .env                 # the image tag, schedules, identity, the host paths
+cp config.example.toml config.toml         # windows, retention, modes — the same file a hand-run reads
+cp .env.example .env                       # the image tag, schedules, identity, the host paths
+mkdir -p var/data var/documents var/logs   # created here, or Docker creates them as root
 docker compose up -d
 ```
 
